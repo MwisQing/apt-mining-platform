@@ -1,0 +1,52 @@
+from sqlalchemy import Column, Integer, Text, DateTime, Index
+from backend.models import Base
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    device_id = Column(Text, nullable=False)
+    first_alert_time = Column(DateTime, nullable=False)
+    last_alert_time = Column(DateTime, nullable=False)
+    source_ip = Column(Text, nullable=False)
+    target = Column(Text, nullable=False)
+    target_type = Column(Text)
+    port = Column(Text)
+    threat_type = Column(Text)
+    threat_level = Column(Text)
+    std_apt_org = Column(Text)
+    apt_org = Column(Text)
+    apt_org_tier = Column(Text)
+    alert_count = Column(Integer)
+    vendors = Column(Text)
+    protocol = Column(Text)
+    intel_tags = Column(Text)
+    dns_resolved_ip = Column(Text)
+    down_traffic = Column(Integer)
+    up_traffic = Column(Integer)
+    asset_type = Column(Text)
+    source_file = Column(Text, nullable=False)
+    imported_at = Column(DateTime, nullable=False)
+    unique_hash = Column(Text, unique=True)
+    content_hash = Column(Text)
+    import_id = Column(Integer)
+    import_sheet_id = Column(Integer)
+    import_row_id = Column(Integer)
+    sheet_name = Column(Text)
+    excel_row_number = Column(Integer)
+    raw_row_hash = Column(Text)
+    analysis_status = Column(Text, default="")
+    is_focused = Column(Integer, default=0)
+
+
+Index("idx_alerts_device_id", Alert.device_id)
+Index("idx_alerts_source_ip", Alert.source_ip)
+Index("idx_alerts_target", Alert.target)
+Index("idx_alerts_imported_at", Alert.imported_at)
+Index("idx_alerts_first_alert_time", Alert.first_alert_time)
+Index("idx_alerts_std_apt_org", Alert.std_apt_org)
+Index("idx_alerts_crossday", Alert.source_ip, Alert.target, Alert.first_alert_time)
+Index("idx_alerts_content_hash", Alert.content_hash)
+Index("idx_alerts_import_id", Alert.import_id)
+Index("idx_alerts_import_row_id", Alert.import_row_id)

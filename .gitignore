@@ -1,0 +1,39 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+
+# Database
+data/
+
+# Uploads (keep directory, ignore files)
+uploads/*
+!uploads/.keep
+
+# Logs
+logs/
+
+# Frontend
+frontend/dist/
+frontend/node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / Temp
+tmp_*.db
+*_regression.db
+
+# AI assistant files
+CLAUDE.md
+CLAUDE_RESPONSE.md
+CLAUDE*.md
