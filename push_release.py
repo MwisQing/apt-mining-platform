@@ -39,6 +39,20 @@ def check_git() -> bool:
     return result.returncode == 0
 
 
+def ensure_remote() -> bool:
+    result = run("git remote get-url origin", capture=True)
+    if result.returncode == 0:
+        print(f"  远程仓库: {result.stdout.strip()}")
+        return True
+    print("  未配置远程仓库，正在添加...")
+    result = run('git remote add origin https://github.com/MwisQing/apt-mining-platform.git')
+    if result.returncode != 0:
+        print("  添加远程仓库失败。")
+        return False
+    print("  远程仓库已添加。")
+    return True
+
+
 def has_changes() -> bool:
     result = run("git status --short", capture=True)
     return bool(result.stdout.strip())
@@ -120,6 +134,13 @@ def main():
         input("按任意键继续...")
         sys.exit(1)
     print("  完成")
+
+    # 确保远程仓库
+    print("\n检查远程仓库...")
+    if not ensure_remote():
+        print("远程仓库配置失败。")
+        input("按任意键继续...")
+        sys.exit(1)
 
     # 推送
     print("[2/3] 推送到远程...")
