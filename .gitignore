@@ -35,3 +35,6 @@ Thumbs.db
 # Test / Temp
 tmp_*.db
 *_regression.db
+
+# Release packages
+releases/
