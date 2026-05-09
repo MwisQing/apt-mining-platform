@@ -23,6 +23,7 @@ os.chdir(SCRIPT_DIR)
 EXCLUDE_DIRS = {
     "data", "uploads", "backups", "venv", "node_modules",
     ".git", ".claude", "__pycache__", "releases", "_release_tmp",
+    "logs",
 }
 EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
 
@@ -57,8 +58,11 @@ def suggest_version(old_ver: str) -> str:
 
 
 def copy_ignore_func(_dir, files):
-    """shutil.copytree ignore 回调，排除 __pycache__ 和 *.pyc 等"""
-    return [f for f in files if fnmatch.fnmatch(f, "*.pyc")]
+    """shutil.copytree ignore 回调，排除 __pycache__、*.pyc、node_modules"""
+    ignored = [f for f in files if fnmatch.fnmatch(f, "*.pyc")]
+    if "node_modules" in files:
+        ignored.append("node_modules")
+    return ignored
 
 
 def build_frontend() -> bool:
