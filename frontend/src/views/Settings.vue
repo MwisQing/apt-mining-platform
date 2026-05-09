@@ -471,8 +471,9 @@
             </el-descriptions>
             <div class="system-actions">
               <el-button type="primary" size="small" @click="goToUpdate">
-                运行 update.bat 更新
+                更新代码
               </el-button>
+              <span class="update-hint">更新代码后启动平台，数据库将自动迁移</span>
             </div>
           </el-card>
 
@@ -1467,7 +1468,7 @@ async function checkUpdate() {
   try {
     versionInfo.value = await fetchVersion()
     if (versionInfo.value.update_available) {
-      ElMessage.info('检测到新版本，请运行 update.bat 更新。')
+      ElMessage.info('检测到新版本，请运行 update.bat 更新代码。')
     } else if (!versionInfo.value.is_git_repo) {
       ElMessage.info('当前未使用 Git 管理，无法检查更新。')
     } else {
@@ -1481,7 +1482,7 @@ async function checkUpdate() {
 }
 
 function goToUpdate() {
-  ElMessage.info('请在终端中运行 update.bat 执行更新。')
+  ElMessage.info('请在终端中运行 update.bat 更新代码，然后启动平台（数据库将自动迁移）。')
 }
 
 function openBackupsDir() {
@@ -1852,7 +1853,15 @@ onBeforeUnmount(() => {
 .system-actions {
   margin-top: 16px;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 8px;
+}
+
+.update-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .changelog-content {
