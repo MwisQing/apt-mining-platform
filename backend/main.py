@@ -19,25 +19,8 @@ setup_logging()
 logger = logging.getLogger("apt-mining")
 
 
-def _run_alembic_migrations():
-    """Run Alembic migrations on startup to keep DB schema in sync with code."""
-    try:
-        from alembic.config import Config
-        from alembic import command
-        alembic_ini = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend", "alembic.ini")
-        if os.path.exists(alembic_ini):
-            cfg = Config(alembic_ini)
-            command.upgrade(cfg, "head")
-            logger.info("Alembic: schema up to date.")
-        else:
-            logger.debug("Alembic config not found, skipping migrations.")
-    except Exception:
-        logger.exception("Alembic migration failed — falling back to legacy init_db.")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _run_alembic_migrations()
     init_db()
     reload_dicts()
     # Periodic WAL checkpoint + memory cleanup to prevent degradation over time
