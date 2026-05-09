@@ -155,7 +155,17 @@ def main():
     tag = f"v{ver}"
     print(f"[3/3] 创建标签 {tag}...")
     if tag_exists(tag):
-        print(f"  标签 {tag} 已存在，跳过推送")
+        print(f"  标签 {tag} 已存在。")
+        confirm = input(f"  是否更新到当前提交? [y/N]: ").strip()
+        if confirm.lower() == "y":
+            run(f"git tag -d {tag}")
+            if not create_and_push_tag(tag):
+                print(f"  标签 {tag} 推送失败！")
+                input("按任意键继续...")
+                sys.exit(1)
+            print(f"  标签 {tag} 已更新。")
+        else:
+            print(f"  跳过标签更新。")
     else:
         if create_and_push_tag(tag):
             print(f"  标签 {tag} 推送成功。")
