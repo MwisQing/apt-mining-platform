@@ -96,7 +96,7 @@ def tag_exists(tag: str) -> bool:
 
 def create_and_push_tag(tag: str) -> bool:
     run(f"git tag {tag}")
-    result = run("git push --tags")
+    result = run(f"git push origin --tags --force")
     return result.returncode == 0
 
 
