@@ -137,6 +137,11 @@ def upgrade_from_zip(zip_file: Path) -> bool:
             shutil.rmtree(tmp_dir)
 
 
+def get_current_branch() -> str:
+    result = run("git branch --show-current", capture=True)
+    return result.stdout.strip()
+
+
 def upgrade_from_git() -> bool:
     """从 Git 远程仓库升级"""
     print("Git 模式")
@@ -148,16 +153,21 @@ def upgrade_from_git() -> bool:
         print("  错误: git fetch 失败！")
         return False
 
-    # 比较 HEAD vs origin/main
+    branch = get_current_branch()
+    if not branch:
+        print("  错误: 无法获取当前分支名。")
+        return False
+
+    # 比较 HEAD vs origin/<branch>
     head = run("git rev-parse HEAD", capture=True).stdout.strip()
-    origin = run("git rev-parse origin/main", capture=True).stdout.strip()
+    origin = run(f"git rev-parse origin/{branch}", capture=True).stdout.strip()
 
     if head == origin:
         print("  代码已经是最新的，无需拉取。")
         return True
 
     print("  检测到新版本，正在拉取...")
-    result = run("git pull origin main")
+    result = run(f"git pull origin {branch}")
     if result.returncode != 0:
         print("  git pull 失败！")
         return False

@@ -641,12 +641,12 @@
         <el-pagination
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
-          :total="total"
+          :total="displayTotal"
           :page-sizes="[50, 100, 200]"
           layout="total, sizes, prev, pager, next"
           background
-          @size-change="loadData"
-          @current-change="loadData"
+          @size-change="handlePageSizeChange"
+          @current-change="handlePageChange"
         />
       </div>
     </section>
@@ -654,7 +654,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, shallowRef } from 'vue'
+import { computed, h, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { CaretTop, CaretBottom, Filter, Operation, RefreshRight, Search, StarFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { fetchCandidates } from '../api/candidates'
@@ -704,24 +704,25 @@ function handleSortClick(key) {
     sortOrder.value = 'desc'
   }
   currentPage.value = 1
+  allDataLoaded = false
   loadData()
 }
 
 const SortButton = {
   props: ['active', 'order', 'columnKey'],
-  components: { CaretTop, CaretBottom },
-  template: `
-    <span
-      class="sort-button"
-      :class="{ 'is-active': active === columnKey }"
-      @click.stop="$emit('sort', columnKey)"
-      title="排序"
-    >
-      <CaretTop :class="{ active: active === columnKey && order === 'asc' }" />
-      <CaretBottom :class="{ active: active === columnKey && order === 'desc' }" />
-    </span>
-  `,
   emits: ['sort'],
+  render() {
+    const { active, order, columnKey } = this
+    const isActive = active === columnKey
+    return h('span', {
+      class: ['sort-button', { 'is-active': isActive }],
+      title: '排序',
+      onClick: (e) => { e.stopPropagation(); this.$emit('sort', columnKey) },
+    }, [
+      h(CaretTop, { class: { active: isActive && order === 'asc' } }),
+      h(CaretBottom, { class: { active: isActive && order === 'desc' } }),
+    ])
+  },
 }
 
 const editingDeviceId = ref('')
@@ -806,11 +807,13 @@ const sortField = ref('')
 const sortOrder = ref('')
 
 const tableData = shallowRef([])
+const allTableData = shallowRef([])
 const loading = ref(false)
 const currentPage = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
 let requestSeq = 0
+let allDataLoaded = false
 
 async function loadConfig() {
   try {
@@ -823,14 +826,21 @@ async function loadConfig() {
   }
 }
 
-async function loadData() {
+async function loadData(forceAllData = false) {
+  const needAllData = forceAllData || FILTERABLE_COLUMNS.some(k => hasFilter(k))
   const requestId = ++requestSeq
   loading.value = true
   try {
     const params = {
-      page: currentPage.value,
-      page_size: pageSize.value,
       hide_traced: hideTraced.value,
+    }
+
+    if (needAllData) {
+      params.page = 1
+      params.page_size = 99999
+    } else {
+      params.page = currentPage.value
+      params.page_size = pageSize.value
     }
 
     if (dateRange.value && dateRange.value.length === 2) {
@@ -847,15 +857,27 @@ async function loadData() {
 
     const res = await fetchCandidates(params)
     if (requestId !== requestSeq) return
-    tableData.value = res.items || []
+    const items = res.items || []
     total.value = res.total || 0
     if (res.filter_options) {
       filterOptions.value = res.filter_options
+    }
+
+    if (needAllData) {
+      allTableData.value = items
+      allDataLoaded = true
+      tableData.value = items
+    } else {
+      allDataLoaded = false
+      allTableData.value = []
+      tableData.value = items
     }
   } catch (e) {
     if (requestId !== requestSeq) return
     ElMessage.error(`加载候选数据失败: ${e.message}`)
     tableData.value = []
+    allTableData.value = []
+    allDataLoaded = false
     total.value = 0
   } finally {
     if (requestId === requestSeq) loading.value = false
@@ -865,12 +887,22 @@ async function loadData() {
 function handleSearch() {
   keyword.value = keyword.value.trim()
   currentPage.value = 1
+  allDataLoaded = false
   loadData()
 }
 
 function setTargetKind(kind) {
   targetKind.value = kind
   handleSearch()
+}
+
+function handlePageChange() {
+  if (!allDataLoaded) loadData()
+}
+
+function handlePageSizeChange() {
+  currentPage.value = 1
+  if (!allDataLoaded) loadData()
 }
 
 // --- Column header filtering ---
@@ -931,13 +963,47 @@ function _rowMatchesFilter(row, key) {
   return filter.includes(rowVal)
 }
 
-const displayData = computed(() => {
+// 全量过滤后的数据（表头筛选作用于全部数据，而非仅当前页）
+const allFilteredData = computed(() => {
+  const source = allDataLoaded ? allTableData.value : tableData.value
   const activeFilters = FILTERABLE_COLUMNS.filter(k => hasFilter(k))
-  if (activeFilters.length === 0) return tableData.value
-  return tableData.value.filter(row =>
+  if (activeFilters.length === 0) return source
+  return source.filter(row =>
     activeFilters.every(key => _rowMatchesFilter(row, key))
   )
 })
+
+// 过滤后的总数
+const totalFiltered = computed(() => allFilteredData.value.length)
+
+// 分页展示数据
+const displayData = computed(() => {
+  if (allDataLoaded) {
+    const start = (currentPage.value - 1) * pageSize.value
+    return allFilteredData.value.slice(start, start + pageSize.value)
+  }
+  return allFilteredData.value
+})
+
+const displayTotal = computed(() => {
+  if (FILTERABLE_COLUMNS.some(k => hasFilter(k))) return totalFiltered.value
+  return total.value
+})
+
+// 当表头筛选条件变化时，自动回到第 1 页，并在需要时加载全量数据
+watch(
+  () => Object.values(columnFilters),
+  () => {
+    const anyFilterActive = FILTERABLE_COLUMNS.some(k => hasFilter(k))
+    currentPage.value = 1
+    if (anyFilterActive && !allDataLoaded) {
+      loadData(true)
+    } else if (!anyFilterActive && allDataLoaded) {
+      loadData()
+    }
+  },
+  { deep: true },
+)
 
 function rowClassName({ row }) {
   const id = row.candidate_priority?.id
@@ -1175,7 +1241,7 @@ onMounted(async () => {
 
 .sort-button {
   flex-shrink: 0;
-  width: 20px;
+  width: 24px;
   height: 20px;
   display: flex;
   flex-direction: column;
@@ -1183,14 +1249,19 @@ onMounted(async () => {
   justify-content: center;
   cursor: pointer;
   border-radius: 4px;
-  transition: background 0.15s;
+  transition: all 0.15s;
   gap: 0;
   line-height: 1;
+  opacity: 0.5;
+  color: var(--text-muted);
 }
 .sort-button:hover {
   background: var(--bg-tertiary);
+  opacity: 1;
+  color: var(--text-primary);
 }
 .sort-button.is-active {
+  opacity: 1;
   color: var(--accent);
 }
 .sort-button :deep(.active) {

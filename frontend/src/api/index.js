@@ -8,7 +8,11 @@ const api = axios.create({
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
-    const message = error.response?.data?.detail || error.message || '请求失败'
+    let detail = error.response?.data?.detail
+    if (Array.isArray(detail)) {
+      detail = detail.map(d => d.msg || JSON.stringify(d)).join('; ')
+    }
+    const message = detail || error.message || '请求失败'
     return Promise.reject(new Error(message))
   }
 )

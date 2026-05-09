@@ -1391,7 +1391,7 @@ def query_alerts(
     sort_by: str = Query(None),
     sort_order: str = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=500),
+    page_size: int = Query(100, ge=1, le=100000),
     db=Depends(get_db),
 ):
     hide_traced, hide_closed = _resolve_hide_defaults(hide_traced, hide_closed)
@@ -1430,7 +1430,7 @@ def query_alert_candidates(
     sort_by: str = Query(None),
     sort_order: str = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=500),
+    page_size: int = Query(100, ge=1, le=100000),
     db=Depends(get_db),
 ):
     hide_traced, hide_closed = _resolve_hide_defaults(hide_traced, hide_closed)

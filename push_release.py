@@ -54,8 +54,17 @@ def git_add_commit(msg: str) -> bool:
     return result.returncode == 0
 
 
+def get_current_branch() -> str:
+    result = run("git branch --show-current", capture=True)
+    return result.stdout.strip()
+
+
 def git_push() -> bool:
-    result = run("git push origin main")
+    branch = get_current_branch()
+    if not branch:
+        print("  错误: 无法获取当前分支名。")
+        return False
+    result = run(f"git push origin {branch}")
     return result.returncode == 0
 
 

@@ -8,12 +8,12 @@
 4. 打包为 releases/ 下的 zip 文件
 """
 
+import fnmatch
 import os
 import sys
 import shutil
-import zipfile
-import fnmatch
 import subprocess
+import zipfile
 from pathlib import Path
 
 # 确保脚本在项目根目录运行
@@ -25,21 +25,6 @@ EXCLUDE_DIRS = {
     ".git", ".claude", "__pycache__", "releases", "_release_tmp",
 }
 EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
-
-
-def copy_ignore_func(dir, files):
-    """shutil.copytree ignore 回调"""
-    ignored = []
-    for f in files:
-        for pat in EXCLUDE_FILE_PATTERNS:
-            if fnmatch.fnmatch(f, pat):
-                ignored.append(f)
-                break
-    for d in EXCLUDE_DIRS:
-        if d in files:
-            # unlikely but safe
-            pass
-    return ignored
 
 
 def print_header():
@@ -69,6 +54,11 @@ def suggest_version(old_ver: str) -> str:
         except ValueError:
             pass
     return old_ver
+
+
+def copy_ignore_func(_dir, files):
+    """shutil.copytree ignore 回调，排除 __pycache__ 和 *.pyc 等"""
+    return [f for f in files if fnmatch.fnmatch(f, "*.pyc")]
 
 
 def build_frontend() -> bool:
