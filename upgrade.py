@@ -149,6 +149,14 @@ def upgrade_from_git() -> bool:
     """从 Git 远程仓库升级"""
     print("Git 模式")
 
+    # 如果本地有未跟踪文件，先提交（避免 pull 冲突）
+    status = run("git status --porcelain", capture=True)
+    if status.stdout.strip():
+        print("  检测到本地文件，正在暂存...")
+        run("git add -A")
+        run('git commit -m "local files before upgrade" --allow-empty')
+        print("  本地文件已暂存。")
+
     # fetch
     print("  正在获取最新代码...")
     result = run("git fetch origin")
@@ -158,12 +166,28 @@ def upgrade_from_git() -> bool:
 
     branch = get_current_branch()
     if not branch:
-        print("  错误: 无法获取当前分支名。")
-        return False
+        # 首次提交没有分支，尝试使用 main
+        run("git branch -M main")
+        branch = "main"
 
     # 比较 HEAD vs origin/<branch>
-    head = run("git rev-parse HEAD", capture=True).stdout.strip()
-    origin = run(f"git rev-parse origin/{branch}", capture=True).stdout.strip()
+    head_result = run("git rev-parse HEAD", capture=True)
+    origin_result = run(f"git rev-parse origin/{branch}", capture=True)
+
+    # 如果没有提交过，HEAD 不存在
+    if head_result.returncode != 0:
+        print("  首次拉取，正在合并远程代码...")
+        result = run(f"git pull origin {branch} --allow-unrelated-histories")
+        if result.returncode != 0:
+            # 合并冲突，强制使用远程版本
+            print("  检测到冲突，使用远程版本覆盖...")
+            run(f"git checkout origin/{branch} -- .")
+            run(f"git pull origin {branch} --allow-unrelated-histories --no-edit")
+        print("  代码拉取完成。")
+        return True
+
+    head = head_result.stdout.strip()
+    origin = origin_result.stdout.strip()
 
     if head == origin:
         print("  代码已经是最新的，无需拉取。")
@@ -172,8 +196,12 @@ def upgrade_from_git() -> bool:
     print("  检测到新版本，正在拉取...")
     result = run(f"git pull origin {branch}")
     if result.returncode != 0:
-        print("  git pull 失败！")
-        return False
+        # pull 失败，尝试强制覆盖
+        print("  合并冲突，使用远程版本覆盖...")
+        run(f"git fetch origin")
+        run(f"git reset --hard origin/{branch}")
+        print("  代码已强制更新。")
+        return True
 
     print("  代码拉取完成。")
     return True
