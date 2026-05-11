@@ -22,6 +22,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 os.chdir(SCRIPT_DIR)
 
+# 远程仓库地址（从 GitHub 下载时自动配置）
+DEFAULT_REMOTE = "https://github.com/MwisQing/apt-mining-platform.git"
+
 # 升级时排除的目录和文件
 EXCLUDE_DIRS = {
     "data", "uploads", "backups", "venv", "node_modules",
@@ -234,6 +237,38 @@ def has_git_remote() -> bool:
     return bool(result.stdout.strip())
 
 
+def ensure_git_remote() -> bool:
+    """确保 git 远程仓库已配置，没有则自动添加"""
+    if has_git_remote():
+        result = run("git remote get-url origin", capture=True)
+        print(f"  远程仓库: {result.stdout.strip()}")
+        return True
+
+    print(f"  未配置远程仓库，正在自动添加...")
+    print(f"  {DEFAULT_REMOTE}")
+    result = run(f"git remote add origin {DEFAULT_REMOTE}")
+    if result.returncode != 0:
+        print("  添加远程仓库失败。")
+        return False
+    print("  远程仓库已添加。")
+    return True
+
+
+def init_git_if_needed() -> bool:
+    """如果不是 git 仓库则初始化"""
+    result = run("git rev-parse --is-inside-work-tree", capture=True)
+    if result.returncode == 0:
+        return True
+
+    print("  未检测到 git 仓库，正在初始化...")
+    result = run("git init")
+    if result.returncode != 0:
+        print("  git init 失败！")
+        return False
+    print("  git 仓库已初始化。")
+    return True
+
+
 def main():
     print_header()
 
@@ -261,15 +296,17 @@ def main():
             print()
             print("未找到离线升级包，也未检测到 Git。")
             print("请将 apt-mining-v*.zip 放到当前目录后重试，")
-            print("或安装 Git 并配置远程仓库。")
+            print("或安装 Git（https://git-scm.com/）。")
             input("按任意键继续...")
             sys.exit(1)
 
-        if not has_git_remote():
-            print()
-            print("未找到离线升级包，也未配置 Git 远程仓库。")
-            print("请将 apt-mining-v*.zip 放到当前目录后重试，")
-            print("或执行: git remote add origin <仓库地址>")
+        # 自动初始化 git 仓库（如果需要）
+        if not init_git_if_needed():
+            input("按任意键继续...")
+            sys.exit(1)
+
+        # 自动配置远程仓库（如果需要）
+        if not ensure_git_remote():
             input("按任意键继续...")
             sys.exit(1)
 
