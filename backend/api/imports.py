@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.utils.db import get_db, get_session_local, get_engine, write_audit
 from backend.utils import get_path
 from backend.services.alert_workbench import compute_alert_content_hash
+from backend.services.snapshot_builder import rebuild_candidate_snapshots
 
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
@@ -749,6 +750,8 @@ def _run_import_job(import_id: int, file_path: str, source_file: str):
                 "total_rows": result["total_rows"],
             })
             db.commit()
+            if status in {"success", "partial"}:
+                rebuild_candidate_snapshots(db)
         except Exception as e:
             _update_import(
                 db,

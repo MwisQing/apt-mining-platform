@@ -44,14 +44,13 @@
         </div>
 
         <el-select
-          v-model="excludeTags"
+          v-model="excludeTagsPending"
           multiple
           filterable
           placeholder="排除标签"
           size="small"
           clearable
           class="filter-item exclude-select"
-          @change="handleSearch"
         >
           <el-option
             v-for="tag in tagOptions"
@@ -60,6 +59,17 @@
             :value="tag.id"
           />
         </el-select>
+
+        <el-button
+          v-if="hasPendingExcludeChanges"
+          type="primary"
+          size="small"
+          @click="applyExcludeTags"
+          class="filter-item"
+        >
+          <el-icon><Search /></el-icon>
+          应用 ({{ excludeTagsPending.length }})
+        </el-button>
 
         <el-input
           v-model="keyword"
@@ -116,6 +126,15 @@
           </div>
         </el-popover>
       </div>
+
+      <el-alert
+        v-if="snapshotStatus === 'building'"
+        title="候选快照正在构建中"
+        :description="snapshotMessage || '系统正在为工作台生成候选快照，请稍候后刷新。'"
+        type="info"
+        :closable="false"
+        class="snapshot-alert"
+      />
     </section>
 
     <section class="table-card">
@@ -130,36 +149,39 @@
         </div>
       </div>
 
-      <el-table
-        ref="tableRef"
-        :data="displayData"
-        size="small"
-        v-loading="loading"
-        stripe
-        row-key="id"
-        :row-class-name="rowClassName"
-        class="candidates-table"
-        :header-cell-style="{ background: 'var(--table-header-bg)', color: 'var(--table-header-text)', borderColor: 'var(--border-color)' }"
-      >
-        <el-table-column v-if="colVisible('priority')" :width="colWidth('priority')" :resizable="false" fixed>
+      <div class="table-scroll">
+        <el-table
+          ref="tableRef"
+          :data="displayData"
+          size="small"
+          v-loading="loading"
+          :element-loading-text="loadingText"
+          stripe
+          row-key="id"
+          :row-class-name="rowClassName"
+          class="candidates-table"
+          :header-cell-style="{ background: 'var(--table-header-bg)', color: 'var(--table-header-text)', borderColor: 'var(--border-color)' }"
+        >
+        <el-table-column v-if="colVisible('priority')" :width="colWidth('priority')" :resizable="false">
           <template #header>
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('priority') }}</span>
-              <el-popover trigger="click" :width="180" placement="bottom-end">
+              <el-popover trigger="click" :width="200" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('priority') }">
                     <Filter />
                   </el-icon>
                 </template>
                 <div class="column-filter">
-                  <el-checkbox-group v-model="columnFilters.priority" class="column-filter-group">
+                  <el-checkbox-group v-model="columnFiltersPending.priority" class="column-filter-group">
                     <el-checkbox v-for="val in _extractValues('priority')" :key="val" :label="val" :value="val">
                       {{ val }}
                     </el-checkbox>
                   </el-checkbox-group>
                   <div class="column-filter__actions">
-                    <el-button size="small" text @click="columnFilters.priority = _extractValues('priority')">全选</el-button>
-                    <el-button size="small" text @click="clearFilter('priority')">清空</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.priority = _extractValues('priority')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.priority = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('priority')" :disabled="!hasPendingColumnFilterChange('priority')">确定</el-button>
                   </div>
                 </div>
               </el-popover>
@@ -213,21 +235,22 @@
           <template #header>
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('device_tags') }}</span>
-              <el-popover trigger="click" :width="220" placement="bottom-end">
+              <el-popover trigger="click" :width="240" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('device_tags') }">
                     <Filter />
                   </el-icon>
                 </template>
                 <div class="column-filter">
-                  <el-checkbox-group v-model="columnFilters.device_tags" class="column-filter-group">
+                  <el-checkbox-group v-model="columnFiltersPending.device_tags" class="column-filter-group">
                     <el-checkbox v-for="val in _extractValues('device_tags')" :key="val" :label="val" :value="val">
                       {{ val }}
                     </el-checkbox>
                   </el-checkbox-group>
                   <div class="column-filter__actions">
-                    <el-button size="small" text @click="columnFilters.device_tags = _extractValues('device_tags')">全选</el-button>
-                    <el-button size="small" text @click="clearFilter('device_tags')">清空</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.device_tags = _extractValues('device_tags')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.device_tags = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('device_tags')" :disabled="!hasPendingColumnFilterChange('device_tags')">确定</el-button>
                   </div>
                 </div>
               </el-popover>
@@ -330,6 +353,7 @@
               :content="sourceIpPreview(row)"
               placement="top"
               :disabled="!hasMultipleSourceIps(row)"
+              :show-after="1000"
             >
               <span class="source-ip">{{ row.source_ips || row.source_ip || '-' }}</span>
             </el-tooltip>
@@ -373,6 +397,24 @@
         </el-table-column>
 
         <el-table-column
+          v-if="colVisible('alert_count')"
+          :width="colWidth('alert_count')"
+          prop="alert_count"
+          align="center"
+        >
+          <template #header>
+            <div class="resizable-header">
+              <span class="col-label-text">{{ colLabel('alert_count') }}</span>
+              <SortButton :active="sortField" :order="sortOrder" column-key="alert_count" @sort="handleSortClick" />
+              <span class="resize-handle" @mousedown.stop="onResizeStart('alert_count', $event)"></span>
+            </div>
+          </template>
+          <template #default="{ row }">
+            <span class="count-cell">{{ row.alert_count ?? 0 }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column
           v-if="colVisible('port')"
           :width="colWidth('port')"
           prop="port"
@@ -382,21 +424,22 @@
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('port') }}</span>
               <SortButton :active="sortField" :order="sortOrder" column-key="port" @sort="handleSortClick" />
-              <el-popover trigger="click" :width="220" placement="bottom-end">
+              <el-popover trigger="click" :width="240" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('port') }">
                     <Filter />
                   </el-icon>
                 </template>
                 <div class="column-filter">
-                  <el-checkbox-group v-model="columnFilters.port" class="column-filter-group">
+                  <el-checkbox-group v-model="columnFiltersPending.port" class="column-filter-group">
                     <el-checkbox v-for="val in _extractValues('port')" :key="val" :label="val" :value="val">
                       {{ val || '(空)' }}
                     </el-checkbox>
                   </el-checkbox-group>
                   <div class="column-filter__actions">
-                    <el-button size="small" text @click="columnFilters.port = _extractValues('port')">全选</el-button>
-                    <el-button size="small" text @click="clearFilter('port')">清空</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.port = _extractValues('port')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.port = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('port')" :disabled="!hasPendingColumnFilterChange('port')">确定</el-button>
                   </div>
                 </div>
               </el-popover>
@@ -430,7 +473,7 @@
           <template #header>
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('ioc_note') }}</span>
-              <el-popover trigger="click" :width="240" placement="bottom-end">
+              <el-popover trigger="click" :width="260" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('ioc_note') }">
                     <Filter />
@@ -438,7 +481,7 @@
                 </template>
                 <div class="column-filter">
                   <el-input
-                    v-model="columnFilters.ioc_note"
+                    v-model="columnFiltersPending.ioc_note"
                     placeholder="输入关键词过滤"
                     size="small"
                     clearable
@@ -447,6 +490,9 @@
                       <el-icon><Search /></el-icon>
                     </template>
                   </el-input>
+                  <div class="column-filter__actions">
+                    <el-button size="small" type="primary" @click="applyColumnFilter('ioc_note')" :disabled="!hasPendingColumnFilterChange('ioc_note')">确定</el-button>
+                  </div>
                 </div>
               </el-popover>
               <span class="resize-handle" @mousedown.stop="onResizeStart('ioc_note', $event)"></span>
@@ -487,21 +533,22 @@
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('threat_type') }}</span>
               <SortButton :active="sortField" :order="sortOrder" column-key="threat_type" @sort="handleSortClick" />
-              <el-popover trigger="click" :width="220" placement="bottom-end">
+              <el-popover trigger="click" :width="240" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('threat_type') }">
                     <Filter />
                   </el-icon>
                 </template>
                 <div class="column-filter">
-                  <el-checkbox-group v-model="columnFilters.threat_type" class="column-filter-group">
+                  <el-checkbox-group v-model="columnFiltersPending.threat_type" class="column-filter-group">
                     <el-checkbox v-for="val in _extractValues('threat_type')" :key="val" :label="val" :value="val">
                       {{ val }}
                     </el-checkbox>
                   </el-checkbox-group>
                   <div class="column-filter__actions">
-                    <el-button size="small" text @click="columnFilters.threat_type = _extractValues('threat_type')">全选</el-button>
-                    <el-button size="small" text @click="clearFilter('threat_type')">清空</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.threat_type = _extractValues('threat_type')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.threat_type = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('threat_type')" :disabled="!hasPendingColumnFilterChange('threat_type')">确定</el-button>
                   </div>
                 </div>
               </el-popover>
@@ -523,21 +570,22 @@
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('std_apt_org') }}</span>
               <SortButton :active="sortField" :order="sortOrder" column-key="std_apt_org" @sort="handleSortClick" />
-              <el-popover trigger="click" :width="220" placement="bottom-end">
+              <el-popover trigger="click" :width="240" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('std_apt_org') }">
                     <Filter />
                   </el-icon>
                 </template>
                 <div class="column-filter">
-                  <el-checkbox-group v-model="columnFilters.std_apt_org" class="column-filter-group">
+                  <el-checkbox-group v-model="columnFiltersPending.std_apt_org" class="column-filter-group">
                     <el-checkbox v-for="val in _extractValues('std_apt_org')" :key="val" :label="val" :value="val">
                       {{ val }}
                     </el-checkbox>
                   </el-checkbox-group>
                   <div class="column-filter__actions">
-                    <el-button size="small" text @click="columnFilters.std_apt_org = _extractValues('std_apt_org')">全选</el-button>
-                    <el-button size="small" text @click="clearFilter('std_apt_org')">清空</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.std_apt_org = _extractValues('std_apt_org')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.std_apt_org = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('std_apt_org')" :disabled="!hasPendingColumnFilterChange('std_apt_org')">确定</el-button>
                   </div>
                 </div>
               </el-popover>
@@ -624,21 +672,22 @@
           <template #header>
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('badges') }}</span>
-              <el-popover trigger="click" :width="220" placement="bottom-end">
+              <el-popover trigger="click" :width="240" placement="bottom-end">
                 <template #reference>
                   <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('badges') }">
                     <Filter />
                   </el-icon>
                 </template>
                 <div class="column-filter">
-                  <el-checkbox-group v-model="columnFilters.badges" class="column-filter-group">
+                  <el-checkbox-group v-model="columnFiltersPending.badges" class="column-filter-group">
                     <el-checkbox v-for="val in _extractValues('badges')" :key="val" :label="val" :value="val">
                       {{ val }}
                     </el-checkbox>
                   </el-checkbox-group>
                   <div class="column-filter__actions">
-                    <el-button size="small" text @click="columnFilters.badges = _extractValues('badges')">全选</el-button>
-                    <el-button size="small" text @click="clearFilter('badges')">清空</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.badges = _extractValues('badges')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.badges = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('badges')" :disabled="!hasPendingColumnFilterChange('badges')">确定</el-button>
                   </div>
                 </div>
               </el-popover>
@@ -660,7 +709,8 @@
             <span v-else class="empty-cell">-</span>
           </template>
         </el-table-column>
-      </el-table>
+        </el-table>
+      </div>
 
       <div class="pagination-bar">
         <el-pagination
@@ -833,6 +883,7 @@ const dateRange = ref(getDefaultDateRange())
 const targetKind = ref('all')
 const hideTraced = ref(true)
 const excludeTags = ref([])
+const excludeTagsPending = ref([])
 const tagOptions = ref([])
 const keyword = ref('')
 const sortField = ref('')
@@ -841,9 +892,12 @@ const sortOrder = ref('')
 const tableData = shallowRef([])
 const allTableData = shallowRef([])
 const loading = ref(false)
+const loadingText = computed(() => loading.value ? '正在加载候选数据，请稍候...' : '')
 const currentPage = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
+const snapshotStatus = ref('')
+const snapshotMessage = ref('')
 let requestSeq = 0
 let allDataLoaded = false
 
@@ -901,6 +955,8 @@ async function loadData(forceAllData = false) {
     if (requestId !== requestSeq) return
     const items = res.items || []
     total.value = res.total || 0
+    snapshotStatus.value = res.meta?.snapshot_status || ''
+    snapshotMessage.value = res.meta?.message || ''
     if (res.filter_options) {
       filterOptions.value = res.filter_options
     }
@@ -914,6 +970,16 @@ async function loadData(forceAllData = false) {
       allTableData.value = []
       tableData.value = items
     }
+
+    // Sync pending filter states with applied states
+    for (const key of FILTERABLE_COLUMNS) {
+      if (key === 'ioc_note') {
+        columnFiltersPending.ioc_note = columnFilters.ioc_note
+      } else {
+        columnFiltersPending[key] = [...columnFilters[key]]
+      }
+    }
+    excludeTagsPending.value = [...excludeTags.value]
   } catch (e) {
     if (requestId !== requestSeq) return
     ElMessage.error(`加载候选数据失败: ${e.message}`)
@@ -921,6 +987,8 @@ async function loadData(forceAllData = false) {
     allTableData.value = []
     allDataLoaded = false
     total.value = 0
+    snapshotStatus.value = ''
+    snapshotMessage.value = ''
   } finally {
     if (requestId === requestSeq) loading.value = false
   }
@@ -959,6 +1027,17 @@ const columnFilters = reactive({
   ioc_note: '',
 })
 
+// Pending (uncommitted) filter state — only applied when user clicks "确定"
+const columnFiltersPending = reactive({
+  device_tags: [],
+  threat_type: [],
+  std_apt_org: [],
+  priority: [],
+  port: [],
+  badges: [],
+  ioc_note: '',
+})
+
 const FILTERABLE_COLUMNS = ['device_tags', 'threat_type', 'std_apt_org', 'priority', 'port', 'badges', 'ioc_note']
 
 const filterOptions = ref({})
@@ -971,9 +1050,48 @@ function hasFilter(key) {
 function clearFilter(key) {
   if (key === 'ioc_note') {
     columnFilters.ioc_note = ''
+    columnFiltersPending.ioc_note = ''
   } else {
     columnFilters[key] = []
+    columnFiltersPending[key] = []
   }
+}
+
+function hasPendingColumnFilterChange(key) {
+  if (key === 'ioc_note') {
+    return (columnFiltersPending.ioc_note || '') !== (columnFilters.ioc_note || '')
+  }
+  const pending = columnFiltersPending[key] || []
+  const applied = columnFilters[key] || []
+  return pending.length !== applied.length || pending.some((v, i) => v !== applied[i])
+}
+
+function applyColumnFilter(key) {
+  if (key === 'ioc_note') {
+    columnFilters.ioc_note = columnFiltersPending.ioc_note || ''
+  } else {
+    columnFilters[key] = [...(columnFiltersPending[key] || [])]
+  }
+  // Trigger re-filter
+  const anyFilterActive = FILTERABLE_COLUMNS.some(k => hasFilter(k))
+  currentPage.value = 1
+  if (anyFilterActive && !allDataLoaded) {
+    loadData(true)
+  } else if (!anyFilterActive && allDataLoaded) {
+    loadData()
+  }
+}
+
+const hasPendingExcludeChanges = computed(() => {
+  const a = excludeTags.value
+  const b = excludeTagsPending.value
+  if (a.length !== b.length) return true
+  return a.some((v, i) => v !== b[i])
+})
+
+function applyExcludeTags() {
+  excludeTags.value = [...excludeTagsPending.value]
+  handleSearch()
 }
 
 function _extractValues(key) {
@@ -1166,6 +1284,10 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
+.snapshot-alert {
+  margin-top: 14px;
+}
+
 .table-card {
   flex: 1;
   min-height: 0;
@@ -1322,8 +1444,14 @@ onMounted(async () => {
   height: 12px;
 }
 
-.candidates-table {
+.table-scroll {
   flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.candidates-table {
+  width: 100%;
 }
 
 .candidates-table :deep(.el-table__body-wrapper) {
@@ -1342,28 +1470,12 @@ onMounted(async () => {
   background-color: var(--table-row-stripe);
 }
 
-.candidates-table :deep(.row-high-priority),
-.candidates-table :deep(.row-medium-priority) {
-  position: relative;
+.candidates-table :deep(.row-high-priority > td:first-child) {
+  box-shadow: inset 3px 0 0 #f87171;
 }
 
-.candidates-table :deep(.row-high-priority)::before,
-.candidates-table :deep(.row-medium-priority)::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  z-index: 1;
-}
-
-.candidates-table :deep(.row-high-priority)::before {
-  background: #f87171;
-}
-
-.candidates-table :deep(.row-medium-priority)::before {
-  background: #f5a623;
+.candidates-table :deep(.row-medium-priority > td:first-child) {
+  box-shadow: inset 3px 0 0 #f5a623;
 }
 
 .device-id,

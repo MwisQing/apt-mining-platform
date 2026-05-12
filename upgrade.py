@@ -79,6 +79,24 @@ def backup_database() -> str:
         return ""
 
 
+def _merge_dir(src, dst):
+    """Merge src directory into dst, overwriting individual files but preserving
+    files that exist only in dst (local files not in the zip)."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        if item.name in EXCLUDE_DIRS:
+            continue
+        for pat in EXCLUDE_FILE_PATTERNS:
+            if fnmatch.fnmatch(item.name, pat):
+                break
+        else:
+            dest_item = dst / item.name
+            if item.is_dir():
+                _merge_dir(item, dest_item)
+            else:
+                shutil.copy2(item, dest_item)
+
+
 def upgrade_from_zip(zip_file: Path) -> bool:
     """从离线 ZIP 包升级"""
     print("离线包模式")
@@ -103,26 +121,21 @@ def upgrade_from_zip(zip_file: Path) -> bool:
                 source_dir = item
                 break
 
-        # 复制覆盖（排除敏感目录）
+        # 复制覆盖（排除敏感目录）——文件级覆盖，不替换整个目录
         print("  正在覆盖文件...")
         for item in source_dir.iterdir():
             if item.name in EXCLUDE_DIRS:
                 continue
-            skip = False
             for pat in EXCLUDE_FILE_PATTERNS:
                 if fnmatch.fnmatch(item.name, pat):
-                    skip = True
                     break
-            if skip:
-                continue
-
-            dest = SCRIPT_DIR / item.name
-            if item.is_dir():
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(item, dest)
             else:
-                shutil.copy2(item, dest)
+                dest = SCRIPT_DIR / item.name
+                if item.is_dir():
+                    # 目录合并：逐个文件覆盖，保留本地额外文件
+                    _merge_dir(item, dest)
+                else:
+                    shutil.copy2(item, dest)
 
         # 移动已使用的 zip 到 releases
         releases_dir = SCRIPT_DIR / "releases"

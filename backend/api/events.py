@@ -4,6 +4,7 @@ from typing import Any
 from sqlalchemy import text
 from datetime import datetime
 from backend.utils.db import get_db, write_audit
+from backend.services.snapshot_builder import request_snapshot_refresh
 
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -14,6 +15,11 @@ def _invalidate_candidate_cache():
     try:
         from backend.api import alerts
         alerts._candidate_cache.clear()
+        alerts._invalidate_full_cache()
+    except Exception:
+        pass
+    try:
+        request_snapshot_refresh("events")
     except Exception:
         pass
 

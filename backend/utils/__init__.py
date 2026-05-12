@@ -51,9 +51,35 @@ def get_config():
 def get_path(key):
     cfg = get_config()
     path = cfg.get("paths", {}).get(key, "")
+    env_overrides = {
+        "db": os.environ.get("APT_DB_PATH"),
+        "upload_tmp": os.environ.get("APT_UPLOAD_TMP"),
+    }
+    if env_overrides.get(key):
+        path = env_overrides[key]
     if not os.path.isabs(path):
         path = os.path.join(_project_root(), path)
     return path
+
+
+def get_runtime_server_config():
+    cfg = get_config()
+    server_cfg = cfg.get("server", {})
+    host = os.environ.get("APT_SERVER_HOST", server_cfg.get("host", "127.0.0.1"))
+    raw_port = os.environ.get("APT_SERVER_PORT", server_cfg.get("port", 8088))
+    try:
+        port = int(raw_port)
+    except Exception:
+        port = 8088
+    auto_open_browser = str(os.environ.get(
+        "APT_AUTO_OPEN_BROWSER",
+        server_cfg.get("auto_open_browser", True),
+    )).lower() not in {"0", "false", "no"}
+    return {
+        "host": host,
+        "port": port,
+        "auto_open_browser": auto_open_browser,
+    }
 
 
 def load_apt_dicts():

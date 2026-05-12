@@ -1,5 +1,22 @@
 # Changelog
 
+## v3.2.0 - 2026-05-12
+
+- 新增：候选快照表系统（alert_candidate_snapshots + badge/tag 子表，active version 切换模型）
+- 新增：后端全量缓存分桶（按基础筛选条件分桶，切换日期零 SQL）
+- 新增：heat map 单次聚合查询（6次独立 SQL 合并为 1 次）
+- 新增：expired_revive badge 预加载 traced_targets 索引（消除 N+1）
+- 新增：快照构建中状态提示（Workbench 页顶部 el-alert）
+- 新增：正式/测试实例配置化（APT_SERVER_HOST/PORT/DB_PATH 环境变量）
+- 新增：start.py/start_test.py/stop.py/stop_test.py 替代旧 bat 脚本
+- 新增：研判工作台「告警次数」列
+- 修复：大 IN (...) 查询分批处理（规避 SQLite too many SQL variables）
+- 修复：研判工作台表格行高异常与数据偏移（移除优先级列 fixed 属性）
+- 修复：priority 列排序/显隐/列宽配置
+- 优化：首次加载 SQL 从 14 次降至 3 次
+- 优化：upgrade.py ZIP 升级模式目录逐文件合并（保留本地额外文件）
+- 优化：标签颜色管理（PATCH /api/tags/tags/{tag_id} + 前端 Settings 页）
+
 ## v3.1.4 - 2026-05-11
 
 - 修复：研判工作台排序功能（SortButton 改为 h() render 函数）

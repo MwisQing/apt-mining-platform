@@ -43,7 +43,7 @@ def init_db():
     # Ensure data directory exists
     os.makedirs(os.path.dirname(get_path("db")), exist_ok=True)
     # Import all models so they register with Base.metadata
-    from backend.models import alert, tag, traced_target, event, import_model  # noqa: F401
+    from backend.models import alert, tag, traced_target, event, import_model, snapshot  # noqa: F401
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema(engine)
@@ -111,6 +111,162 @@ def _ensure_runtime_schema(engine):
         ))
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_alerts_std_apt_org ON alerts(std_apt_org)"
+        ))
+        # Composite indexes for heat map and source_ip consolidation queries
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_heat_group ON alerts(device_id, target, source_ip)"
+        ))
+        # Index for traced_targets lookup (expired_revive badge, trace maps)
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_traced_target_port ON traced_targets(target, port)"
+        ))
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS snapshot_build_meta ("
+            "snapshot_type TEXT PRIMARY KEY, "
+            "active_version TEXT, "
+            "building_version TEXT, "
+            "status TEXT NOT NULL DEFAULT 'idle', "
+            "last_built_at TEXT, "
+            "last_build_started_at TEXT, "
+            "last_build_duration_ms INTEGER DEFAULT 0, "
+            "last_row_count INTEGER DEFAULT 0, "
+            "last_error TEXT)"
+        ))
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS alert_candidate_snapshots ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "snapshot_version TEXT NOT NULL, "
+            "device_id TEXT NOT NULL, "
+            "target TEXT NOT NULL, "
+            "port TEXT NOT NULL DEFAULT '', "
+            "source_ip TEXT, "
+            "source_ips TEXT, "
+            "source_ip_count INTEGER DEFAULT 0, "
+            "target_type TEXT, "
+            "target_kind TEXT, "
+            "target_kind_label TEXT, "
+            "threat_type TEXT, "
+            "threat_level TEXT, "
+            "std_apt_org TEXT, "
+            "apt_org TEXT, "
+            "apt_org_tier TEXT, "
+            "vendors TEXT, "
+            "protocol TEXT, "
+            "intel_tags TEXT, "
+            "dns_resolved_ip TEXT, "
+            "asset_type TEXT, "
+            "analysis_status TEXT DEFAULT '', "
+            "is_focused INTEGER DEFAULT 0, "
+            "alert_count INTEGER DEFAULT 0, "
+            "first_alert_time TEXT, "
+            "last_alert_time TEXT, "
+            "heat_target_alert_count INTEGER DEFAULT 0, "
+            "heat_target_device_count INTEGER DEFAULT 0, "
+            "heat_device_alert_count INTEGER DEFAULT 0, "
+            "heat_device_target_count INTEGER DEFAULT 0, "
+            "heat_source_ip_alert_count INTEGER DEFAULT 0, "
+            "candidate_score INTEGER DEFAULT 0, "
+            "candidate_priority TEXT, "
+            "candidate_priority_label TEXT, "
+            "candidate_rule_ids_json TEXT, "
+            "candidate_reasons_json TEXT, "
+            "event_json TEXT, "
+            "event_status TEXT, "
+            "trace_json TEXT, "
+            "trace_status TEXT, "
+            "ioc_note TEXT, "
+            "cross_day INTEGER DEFAULT 0, "
+            "lateral INTEGER DEFAULT 0, "
+            "heat_summary_json TEXT, "
+            "relation_summary TEXT, "
+            "candidate_summary TEXT, "
+            "candidate_focus TEXT, "
+            "device_note_summary TEXT, "
+            "sort_priority_rank INTEGER DEFAULT 0, "
+            "sort_rule_hits INTEGER DEFAULT 0, "
+            "sort_target_device_count INTEGER DEFAULT 0, "
+            "sort_target_alert_count INTEGER DEFAULT 0, "
+            "sort_source_ip_alert_count INTEGER DEFAULT 0, "
+            "sort_trace_status TEXT, "
+            "sort_event_status TEXT, "
+            "updated_at TEXT NOT NULL, "
+            "UNIQUE(snapshot_version, device_id, target, port))"
+        ))
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS alert_candidate_snapshot_badges ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "snapshot_version TEXT NOT NULL, "
+            "snapshot_id INTEGER NOT NULL, "
+            "badge_name TEXT NOT NULL, "
+            "badge_label TEXT NOT NULL, "
+            "badge_color TEXT, "
+            "FOREIGN KEY(snapshot_id) REFERENCES alert_candidate_snapshots(id) ON DELETE CASCADE)"
+        ))
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS alert_candidate_snapshot_tags ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "snapshot_version TEXT NOT NULL, "
+            "snapshot_id INTEGER NOT NULL, "
+            "tag_id INTEGER NOT NULL, "
+            "tag_name TEXT NOT NULL, "
+            "tag_color TEXT, "
+            "FOREIGN KEY(snapshot_id) REFERENCES alert_candidate_snapshots(id) ON DELETE CASCADE)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_first_time "
+            "ON alert_candidate_snapshots(snapshot_version, first_alert_time)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_score "
+            "ON alert_candidate_snapshots(snapshot_version, candidate_score DESC)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_target_type "
+            "ON alert_candidate_snapshots(snapshot_version, target_type)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_threat_type "
+            "ON alert_candidate_snapshots(snapshot_version, threat_type)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_threat_level "
+            "ON alert_candidate_snapshots(snapshot_version, threat_level)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_apt_tier "
+            "ON alert_candidate_snapshots(snapshot_version, apt_org_tier)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_trace "
+            "ON alert_candidate_snapshots(snapshot_version, trace_status)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_priority "
+            "ON alert_candidate_snapshots(snapshot_version, candidate_priority)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_version_target "
+            "ON alert_candidate_snapshots(snapshot_version, target)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_badges_version_name "
+            "ON alert_candidate_snapshot_badges(snapshot_version, badge_name)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_badges_version_snapshot "
+            "ON alert_candidate_snapshot_badges(snapshot_version, snapshot_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_tags_version_tag "
+            "ON alert_candidate_snapshot_tags(snapshot_version, tag_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_tags_version_name "
+            "ON alert_candidate_snapshot_tags(snapshot_version, tag_name)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_snap_tags_version_snapshot "
+            "ON alert_candidate_snapshot_tags(snapshot_version, snapshot_id)"
         ))
         _add_column_if_missing(connection, "tag_batches", "status", "status TEXT DEFAULT 'active'")
         _add_column_if_missing(connection, "tag_batches", "device_ids_snapshot", "device_ids_snapshot TEXT")

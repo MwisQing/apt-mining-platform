@@ -24,7 +24,22 @@ def _is_trace_expired(trace_info, ttl_days):
     return traced_at_dt < datetime.now() - timedelta(days=ttl_days)
 
 
-def compute_badges(alert_row, cross_day_pairs=None, lateral_ips=None, db=None, trace_info=None):
+def _build_trace_index(all_trace_rows):
+    """Pre-build (target, port) → list of trace info dict for O(1) lookup."""
+    index = {}
+    for row in all_trace_rows:
+        target = row[0]
+        port = row[1] or ""
+        info = {"traced_at": str(row[2]) if row[2] else None, "note": row[3]}
+        index.setdefault((target, port), []).append(info)
+    return index
+
+
+def compute_badges(alert_row, cross_day_pairs=None, lateral_ips=None, db=None, trace_info=None, trace_index=None):
+    """Compute badges for an alert row.
+
+    trace_index: pre-built (target, port) → list of trace info dict. Replaces N+1 SQL queries.
+    """
     if cross_day_pairs is None:
         cross_day_pairs = set()
     if lateral_ips is None:
@@ -65,16 +80,21 @@ def compute_badges(alert_row, cross_day_pairs=None, lateral_ips=None, db=None, t
     if "expired_revive" in enabled:
         ttl_days = cfg.get("rules", {}).get("trace_ttl_days", 30)
         expired = _is_trace_expired(trace_info, ttl_days)
-        if not expired and db is not None:
-            from sqlalchemy import text
-
+        if not expired and trace_index is not None:
+            # Use pre-built index instead of per-row SQL query
+            ttl_cutoff = (datetime.now() - timedelta(days=ttl_days)).isoformat()
+            port_match = alert_row.port if alert_row.port else ""
+            all_traces = trace_index.get((alert_row.target, port_match), [])
+            expired = any(
+                t["traced_at"] and str(t["traced_at"]) < ttl_cutoff for t in all_traces
+            )
+        elif not expired and db is not None and trace_index is None:
+            # Fallback: legacy per-row query (only if index not provided)
             ttl_cutoff = (datetime.now() - timedelta(days=ttl_days)).isoformat()
             port_match = alert_row.port if alert_row.port else ""
             rows = db.execute(
-                text(
-                    "SELECT traced_at FROM traced_targets "
-                    "WHERE target = :target AND COALESCE(port, '') = :port"
-                ),
+                "SELECT traced_at FROM traced_targets "
+                "WHERE target = :target AND COALESCE(port, '') = :port",
                 {"target": alert_row.target, "port": port_match},
             ).fetchall()
             expired = any(row[0] and str(row[0]) < ttl_cutoff for row in rows)

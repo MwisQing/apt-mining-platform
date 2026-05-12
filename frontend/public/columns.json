@@ -8,6 +8,7 @@
     { "key": "source_ip", "label": "源IP", "width": 130, "visible": true },
     { "key": "source_ip_count", "label": "源IP数", "width": 75, "visible": true },
     { "key": "target", "label": "外联目标", "width": 180, "visible": true },
+    { "key": "alert_count", "label": "告警次数", "width": 90, "visible": true },
     { "key": "port", "label": "端口", "width": 70, "visible": true },
     { "key": "device_alert_count", "label": "外联告警数量", "width": 110, "visible": true },
     { "key": "ioc_note", "label": "IOC备注", "width": 200, "visible": true },

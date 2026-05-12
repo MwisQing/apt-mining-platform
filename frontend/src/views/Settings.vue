@@ -280,6 +280,62 @@
             </el-table>
           </el-card>
 
+          <!-- 标签颜色管理 -->
+          <el-card class="section-card">
+            <template #header>
+              <div class="card-header-row">
+                <span class="card-title">标签颜色管理</span>
+                <el-button size="small" @click="loadAllTags" :loading="allTagsLoading">刷新</el-button>
+              </div>
+            </template>
+            <p class="upload-hint mb-8">修改已存在标签的名称和颜色，即时生效。</p>
+            <el-table
+              :data="allTagsList"
+              size="small"
+              v-loading="allTagsLoading"
+              :header-cell-style="{ background: 'var(--table-header-bg)', color: 'var(--table-header-text)', borderColor: 'var(--border-color)' }"
+            >
+              <el-table-column label="ID" width="60" align="center" prop="id" />
+              <el-table-column label="标签名" min-width="140">
+                <template #default="{ row }">
+                  <el-input
+                    v-model="row._editName"
+                    size="small"
+                    :disabled="!row._editing"
+                  />
+                </template>
+              </el-table-column>
+              <el-table-column label="颜色" width="100" align="center">
+                <template #default="{ row }">
+                  <el-color-picker
+                    v-model="row._editColor"
+                    size="small"
+                    :disabled="!row._editing"
+                  />
+                </template>
+              </el-table-column>
+              <el-table-column label="预览" width="100" align="center">
+                <template #default="{ row }">
+                  <el-tag :color="row._editColor" :style="{ color: '#fff', border: 'none' }" size="small">
+                    {{ row._editName || row.name }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="创建时间" width="170" prop="created_at" />
+              <el-table-column label="操作" width="140" align="center">
+                <template #default="{ row }">
+                  <template v-if="!row._editing">
+                    <el-button size="small" type="primary" @click="startEditTag(row)">编辑</el-button>
+                  </template>
+                  <template v-else>
+                    <el-button size="small" @click="cancelEditTag(row)">取消</el-button>
+                    <el-button size="small" type="primary" @click="saveEditTag(row)" :loading="row._saving">保存</el-button>
+                  </template>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+
           <!-- 追踪库 -->
           <el-card class="section-card">
             <template #header>
@@ -742,7 +798,7 @@ import {
 } from '../api/imports'
 import {
   importTextFiles, fetchBatches, fetchBatch, deleteBatch, removeDevicesFromBatch,
-  restoreBatch, batchAddDeviceTag, batchRemoveDeviceTag, fetchTags
+  restoreBatch, batchAddDeviceTag, batchRemoveDeviceTag, fetchTags, updateTag
 } from '../api/tags'
 import {
   importTraced, fetchTracedList, deleteTraced, createTraced
@@ -1278,6 +1334,62 @@ async function handleRestoreBatch(row) {
   }
 }
 
+// ====== 标签颜色管理 ======
+const allTagsList = ref([])
+const allTagsLoading = ref(false)
+
+async function loadAllTags() {
+  allTagsLoading.value = true
+  try {
+    const res = await fetchTags()
+    allTagsList.value = (Array.isArray(res) ? res : []).map(t => ({
+      ...t,
+      _editName: t.name,
+      _editColor: t.color || '#409EFF',
+      _editing: false,
+      _saving: false,
+    }))
+  } catch (e) {
+    ElMessage.error('加载标签列表失败: ' + e.message)
+  } finally {
+    allTagsLoading.value = false
+  }
+}
+
+function startEditTag(row) {
+  row._editing = true
+  row._editName = row.name
+  row._editColor = row.color || '#409EFF'
+}
+
+function cancelEditTag(row) {
+  row._editing = false
+  row._editName = row.name
+  row._editColor = row.color || '#409EFF'
+}
+
+async function saveEditTag(row) {
+  if (!row._editName || !row._editName.trim()) {
+    ElMessage.warning('标签名不能为空')
+    return
+  }
+  row._saving = true
+  try {
+    await updateTag(row.id, {
+      name: row._editName.trim(),
+      color: row._editColor,
+    })
+    row.name = row._editName.trim()
+    row.color = row._editColor
+    row._editing = false
+    ElMessage.success('标签已更新')
+  } catch (e) {
+    ElMessage.error('更新失败: ' + e.message)
+  } finally {
+    row._saving = false
+  }
+}
+
 // 追踪库
 const tracedList = ref([])
 const tracedLoading = ref(false)
@@ -1523,6 +1635,7 @@ onMounted(() => {
   loadDicts()
   loadVersion()
   loadChangelog()
+  loadAllTags()
 })
 
 onBeforeUnmount(() => {

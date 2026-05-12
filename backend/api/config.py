@@ -2,6 +2,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 from backend.utils import get_config, reload_dicts, get_path, save_config
+from backend.services.snapshot_builder import request_snapshot_refresh
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -57,4 +58,5 @@ def save_config_api(data: Any = Body(...)):
 
     save_config(cfg)
     reload_dicts()
+    request_snapshot_refresh("config")
     return get_config_api()

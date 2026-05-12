@@ -27,7 +27,9 @@ HEADERS = [
 ]
 
 TOTAL_ROWS = 100_000
-print(f"Generating {TOTAL_ROWS:,} rows with realistic patterns...")
+TODAY = datetime.now().replace(hour=9, minute=0, second=0)
+NOW = TODAY
+print(f"Generating {TOTAL_ROWS:,} rows with today's date ({TODAY.strftime('%Y-%m-%d')}) and realistic patterns...")
 
 # ═══════════════════════════════════════════════════════════
 # DATA POOLS
@@ -170,7 +172,7 @@ IS_FOCUSED = ["否"] * 85 + ["是"] * 15
 # 4. Scanning noise (30% = 30k rows): high-count scan alerts
 # 5. Random mix (10% = 10k rows): fill remaining
 
-NOW = datetime(2026, 4, 29, 9, 0, 0)
+NOW = datetime(2026, 5, 11, 9, 0, 0)
 TOTAL_DEVICES = 5000
 
 # Generate device pool
@@ -465,9 +467,10 @@ print(f"Total rows: {len(rows):,}")
 
 # ── Save ──
 df = pd.DataFrame(rows, columns=HEADERS)
+date_str = TODAY.strftime("%Y%m%d")
 output_dir = 'uploads'
 os.makedirs(output_dir, exist_ok=True)
-output_path = os.path.join(output_dir, 'demo_alerts.xlsx')
+output_path = os.path.join(output_dir, f'demo_alerts_{date_str}.xlsx')
 df.to_excel(output_path, index=False, engine='openpyxl')
 print(f"\nSaved {len(df):,} rows to {output_path}")
 print(f"File size: {os.path.getsize(output_path) / (1024*1024):.1f} MB")

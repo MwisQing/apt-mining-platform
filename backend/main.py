@@ -11,7 +11,8 @@ import gc
 from backend.utils import get_config, reload_dicts
 from backend.utils.db import get_engine, init_db
 from backend.utils.logger import setup_logging
-from backend.api import alerts, devices, events, tags, traced, imports, persistence, config as config_api, version as version_api
+from backend.api import alerts, devices, events, tags, traced, imports, persistence, config as config_api, version as version_api, snapshots
+from backend.services.snapshot_builder import rebuild_candidate_snapshots_async
 
 import logging
 
@@ -23,6 +24,20 @@ logger = logging.getLogger("apt-mining")
 async def lifespan(app: FastAPI):
     init_db()
     reload_dicts()
+    if os.environ.get("DISABLE_AUTO_SNAPSHOT_BUILD") != "1":
+        try:
+            from backend.utils.db import get_session_local
+            session = get_session_local()()
+            try:
+                meta = session.execute(
+                    text("SELECT active_version FROM snapshot_build_meta WHERE snapshot_type = 'alert_candidates'")
+                ).fetchone()
+            finally:
+                session.close()
+            if not meta or not meta[0]:
+                rebuild_candidate_snapshots_async()
+        except Exception:
+            logger.exception("Failed to trigger initial snapshot rebuild")
     # Periodic WAL checkpoint + memory cleanup to prevent degradation over time
     import asyncio
     checkpoint_count = 0
@@ -74,6 +89,7 @@ app.include_router(imports.router)
 app.include_router(persistence.router)
 app.include_router(config_api.router)
 app.include_router(version_api.router)
+app.include_router(snapshots.router)
 
 
 @app.get("/api/health")

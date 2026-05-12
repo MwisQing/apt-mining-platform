@@ -11,7 +11,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
-from backend.services import compute_badges
+from backend.services import _build_trace_index, compute_badges
+from backend.services.snapshot_builder import (
+    SNAPSHOT_STATUS_BUILDING,
+    SNAPSHOT_TYPE_ALERT_CANDIDATES,
+    get_active_snapshot_version,
+    get_snapshot_meta,
+    rebuild_candidate_snapshots_async,
+)
 from backend.services.alert_workbench import (
     DEFAULT_CANDIDATE_RULES,
     build_candidate_rule_sql,
@@ -30,16 +37,41 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 candidate_router = APIRouter(prefix="/api/alert-candidates", tags=["alert-candidates"])
 
 # In-process cache for fully-decorated candidate data.
-# Key = hash of filter params (excl. sort/page), value = {items, total, ts}.
+# Key = hash of filter params (excl. sort/page/date), value = {items, total, ts}.
 _candidate_cache = OrderedDict()
+# Full-range cache: bucketed by base filter params and stores ALL decorated
+# candidate items without date/keyword/badge/target-kind filtering.
+_full_cache = OrderedDict()  # key -> {items, total, ts, sorted_views}
 CACHE_MAX_ENTRIES = 20
 CACHE_TTL = 600  # 10 minutes
+FULL_CACHE_TTL = 300  # 5 minutes for full cache
+FULL_CACHE_MAX_ENTRIES = 12
+SQLITE_IN_LIMIT_SAFE = 800
 
 
 def _cache_key_for_params(params: dict) -> str:
     filter_params = {
         k: v for k, v in sorted(params.items())
-        if k not in ("sort_by", "sort_order", "page", "page_size")
+        if k not in ("sort_by", "sort_order", "page", "page_size", "date_start", "date_end")
+    }
+    raw = json.dumps(filter_params, default=str, sort_keys=True)
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
+def _full_cache_key_for_params(params: dict) -> str:
+    filter_params = {
+        k: v for k, v in sorted(params.items())
+        if k not in (
+            "sort_by",
+            "sort_order",
+            "page",
+            "page_size",
+            "date_start",
+            "date_end",
+            "keyword",
+            "badges_filter",
+            "target_kind",
+        )
     }
     raw = json.dumps(filter_params, default=str, sort_keys=True)
     return hashlib.md5(raw.encode()).hexdigest()[:12]
@@ -52,6 +84,74 @@ def _evict_cache_if_needed():
         del _candidate_cache[k]
     while len(_candidate_cache) > CACHE_MAX_ENTRIES:
         _candidate_cache.popitem(last=False)
+
+
+def _invalidate_full_cache():
+    """Invalidate the full-range cache. Called on data mutations."""
+    _full_cache.clear()
+
+
+def _evict_full_cache_if_needed():
+    now = time.time()
+    expired = [k for k, v in _full_cache.items() if now - v["ts"] > FULL_CACHE_TTL]
+    for k in expired:
+        del _full_cache[k]
+    while len(_full_cache) > FULL_CACHE_MAX_ENTRIES:
+        _full_cache.popitem(last=False)
+
+
+def _iter_chunks(values, size=SQLITE_IN_LIMIT_SAFE):
+    for index in range(0, len(values), size):
+        yield values[index : index + size]
+
+
+def _filter_by_date(items, date_start, date_end):
+    """Filter candidate items by date range in Python."""
+    if not date_start and not date_end:
+        return items
+    filtered = []
+    for item in items:
+        fat = item.get("first_alert_time") or ""
+        if date_start and fat < f"{date_start} 00:00:00":
+            continue
+        if date_end and fat > f"{date_end} 23:59:59":
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _filter_by_keyword(items, keyword):
+    if not keyword:
+        return items
+    lowered_keyword = keyword.lower()
+    keyword_fields = ("device_id", "source_ip", "target", "threat_type", "apt_org", "std_apt_org")
+    return [
+        item
+        for item in items
+        if any(lowered_keyword in str(item.get(field) or "").lower() for field in keyword_fields)
+    ]
+
+
+def _filter_by_target_kind(items, target_kind):
+    if not target_kind or target_kind == "all":
+        return items
+    return [
+        item
+        for item in items
+        if item.get("target_kind") == target_kind
+        or classify_target_kind(item.get("target"), item.get("target_type")) == target_kind
+    ]
+
+
+def _filter_by_badges(items, badges_filter):
+    required_badges = set(_csv_values(badges_filter))
+    if not required_badges:
+        return items
+    return [
+        item
+        for item in items
+        if required_badges.issubset({badge.get("name") for badge in (item.get("badges") or [])})
+    ]
 
 
 def _csv_values(value):
@@ -243,6 +343,14 @@ def _prefer_event(current, candidate):
     return candidate if candidate_key < current_key else current
 
 
+def _preload_trace_index(db):
+    """Preload ALL traced_targets into an index for O(1) badge lookup."""
+    trace_rows = db.execute(text(
+        "SELECT target, COALESCE(port, '') AS port, traced_at, note FROM traced_targets"
+    )).fetchall()
+    return _build_trace_index(trace_rows)
+
+
 def _event_maps_for_rows(db, rows):
     """Build IOC→event maps. Events are matched by IOC+port only, not by device_id."""
     targets = sorted({row._mapping["target"] for row in rows if row._mapping.get("target")})
@@ -251,38 +359,39 @@ def _event_maps_for_rows(db, rows):
     ioc_wildcard_map = {}
 
     if targets:
-        placeholders = ", ".join(f":target_{index}" for index in range(len(targets)))
-        ioc_rows = db.execute(
-            text(
-                f"""
-                SELECT
-                    mei.target,
-                    COALESCE(mei.port, '') AS port,
-                    me.id AS event_id,
-                    me.event_name,
-                    me.color,
-                    me.status,
-                    me.mined_at
-                FROM mined_event_iocs mei
-                JOIN mined_events me ON me.id = mei.event_id
-                WHERE mei.target IN ({placeholders})
-                """
-            ),
-            {f"target_{index}": value for index, value in enumerate(targets)},
-        ).fetchall()
-        for row in ioc_rows:
-            event_info = {
-                "event_id": row[2],
-                "event_name": row[3],
-                "color": row[4],
-                "status": row[5],
-                "mined_at": str(row[6]) if row[6] else None,
-            }
-            if row[1]:
-                key = (row[0], row[1])
-                ioc_exact_map[key] = _prefer_event(ioc_exact_map.get(key), event_info)
-            else:
-                ioc_wildcard_map[row[0]] = _prefer_event(ioc_wildcard_map.get(row[0]), event_info)
+        for chunk in _iter_chunks(targets):
+            placeholders = ", ".join(f":target_{index}" for index in range(len(chunk)))
+            ioc_rows = db.execute(
+                text(
+                    f"""
+                    SELECT
+                        mei.target,
+                        COALESCE(mei.port, '') AS port,
+                        me.id AS event_id,
+                        me.event_name,
+                        me.color,
+                        me.status,
+                        me.mined_at
+                    FROM mined_event_iocs mei
+                    JOIN mined_events me ON me.id = mei.event_id
+                    WHERE mei.target IN ({placeholders})
+                    """
+                ),
+                {f"target_{index}": value for index, value in enumerate(chunk)},
+            ).fetchall()
+            for row in ioc_rows:
+                event_info = {
+                    "event_id": row[2],
+                    "event_name": row[3],
+                    "color": row[4],
+                    "status": row[5],
+                    "mined_at": str(row[6]) if row[6] else None,
+                }
+                if row[1]:
+                    key = (row[0], row[1])
+                    ioc_exact_map[key] = _prefer_event(ioc_exact_map.get(key), event_info)
+                else:
+                    ioc_wildcard_map[row[0]] = _prefer_event(ioc_wildcard_map.get(row[0]), event_info)
 
     return {}, ioc_exact_map, ioc_wildcard_map
 
@@ -311,30 +420,31 @@ def _trace_maps_for_rows(db, rows):
     if not targets:
         return exact_map, wildcard_map
 
-    placeholders = ", ".join(f":target_{index}" for index in range(len(targets)))
-    trace_rows = db.execute(
-        text(
-            f"""
-            SELECT target, COALESCE(port, '') AS port, traced_at, note
-            FROM traced_targets
-            WHERE target IN ({placeholders})
-            ORDER BY COALESCE(traced_at, '9999-12-31T00:00:00') DESC
-            """
-        ),
-        {f"target_{index}": value for index, value in enumerate(targets)},
-    ).fetchall()
+    for chunk in _iter_chunks(targets):
+        placeholders = ", ".join(f":target_{index}" for index in range(len(chunk)))
+        trace_rows = db.execute(
+            text(
+                f"""
+                SELECT target, COALESCE(port, '') AS port, traced_at, note
+                FROM traced_targets
+                WHERE target IN ({placeholders})
+                ORDER BY COALESCE(traced_at, '9999-12-31T00:00:00') DESC
+                """
+            ),
+            {f"target_{index}": value for index, value in enumerate(chunk)},
+        ).fetchall()
 
-    for row in trace_rows:
-        trace_info = {
-            "target": row[0],
-            "port": row[1],
-            "traced_at": str(row[2]) if row[2] else None,
-            "note": row[3],
-        }
-        if row[1]:
-            exact_map.setdefault((row[0], row[1]), trace_info)
-        else:
-            wildcard_map.setdefault(row[0], trace_info)
+        for row in trace_rows:
+            trace_info = {
+                "target": row[0],
+                "port": row[1],
+                "traced_at": str(row[2]) if row[2] else None,
+                "note": row[3],
+            }
+            if row[1]:
+                exact_map.setdefault((row[0], row[1]), trace_info)
+            else:
+                wildcard_map.setdefault(row[0], trace_info)
 
     return exact_map, wildcard_map
 
@@ -361,44 +471,45 @@ def _device_tag_map_for_rows(db, rows):
     if not device_ids:
         return tag_map
 
-    placeholders = ", ".join(f":device_{index}" for index in range(len(device_ids)))
-    tag_rows = db.execute(
-        text(
-            f"""
-            SELECT
-                dt.device_id,
-                t.id,
-                t.name,
-                t.color,
-                t.is_permanent,
-                t.batch_id
-            FROM device_tags dt
-            JOIN tags t ON t.id = dt.tag_id
-            LEFT JOIN tag_batches tb ON tb.id = t.batch_id
-            WHERE dt.device_id IN ({placeholders})
-            AND (t.batch_id IS NULL OR tb.status IS NULL OR tb.status != 'deleted')
-            ORDER BY t.created_at DESC, t.id DESC
-            """
-        ),
-        {f"device_{index}": value for index, value in enumerate(device_ids)},
-    ).fetchall()
+    for chunk in _iter_chunks(device_ids):
+        placeholders = ", ".join(f":device_{index}" for index in range(len(chunk)))
+        tag_rows = db.execute(
+            text(
+                f"""
+                SELECT
+                    dt.device_id,
+                    t.id,
+                    t.name,
+                    t.color,
+                    t.is_permanent,
+                    t.batch_id
+                FROM device_tags dt
+                JOIN tags t ON t.id = dt.tag_id
+                LEFT JOIN tag_batches tb ON tb.id = t.batch_id
+                WHERE dt.device_id IN ({placeholders})
+                AND (t.batch_id IS NULL OR tb.status IS NULL OR tb.status != 'deleted')
+                ORDER BY t.created_at DESC, t.id DESC
+                """
+            ),
+            {f"device_{index}": value for index, value in enumerate(chunk)},
+        ).fetchall()
 
-    for row in tag_rows:
-        device_id = row[0]
-        tag_id = row[1]
-        tag_name = (row[2] or "").strip()
-        # Guard against duplicate tag_id AND duplicate tag name (normalized)
-        if any(t["id"] == tag_id or t["name"].strip() == tag_name for t in tag_map[device_id]):
-            continue
-        tag_map[device_id].append(
-            {
-                "id": tag_id,
-                "name": row[2],
-                "color": row[3],
-                "is_permanent": bool(row[4]),
-                "batch_id": row[5],
-            }
-        )
+        for row in tag_rows:
+            device_id = row[0]
+            tag_id = row[1]
+            tag_name = (row[2] or "").strip()
+            # Guard against duplicate tag_id AND duplicate tag name (normalized)
+            if any(t["id"] == tag_id or t["name"].strip() == tag_name for t in tag_map[device_id]):
+                continue
+            tag_map[device_id].append(
+                {
+                    "id": tag_id,
+                    "name": row[2],
+                    "color": row[3],
+                    "is_permanent": bool(row[4]),
+                    "batch_id": row[5],
+                }
+            )
 
     return tag_map
 
@@ -483,8 +594,7 @@ def _event_for_row(row_dict, device_map, ioc_exact_map, ioc_wildcard_map):
     )
 
 
-def _make_items(db, rows, cross_day_pairs, lateral_ips, badges_filter=None):
-    required_badges = set(_csv_values(badges_filter))
+def _make_items(db, rows, cross_day_pairs, lateral_ips, badges_filter=None, trace_index=None):
     device_map, ioc_exact_map, ioc_wildcard_map = _event_maps_for_rows(db, rows)
     trace_exact_map, trace_wildcard_map = _trace_maps_for_rows(db, rows)
     tag_map = _device_tag_map_for_rows(db, rows)
@@ -503,13 +613,10 @@ def _make_items(db, rows, cross_day_pairs, lateral_ips, badges_filter=None):
                 cross_day_pairs,
                 lateral_ips,
                 trace_info=trace_info,
+                trace_index=trace_index,
             )
             + _build_relation_badges(row_dict, device_tags, event_info, trace_info)
         )
-        if required_badges:
-            badge_names = {badge.get("name") for badge in row_dict["badges"]}
-            if not required_badges.issubset(badge_names):
-                continue
 
         row_dict["device_tags"] = device_tags
         row_dict["event"] = event_info
@@ -572,6 +679,185 @@ def _build_filter_options(items):
     return result
 
 
+def _snapshot_empty_filter_options():
+    return {
+        "device_tags": [],
+        "threat_type": [],
+        "std_apt_org": [],
+        "priority": ["高优先", "中优先", "观察"],
+        "port": [],
+        "badges": [],
+        "ioc_note": None,
+    }
+
+
+def _build_snapshot_filter_options(db, where, params):
+    result = _snapshot_empty_filter_options()
+
+    threat_rows = db.execute(
+        text(
+            f"SELECT DISTINCT s.threat_type FROM alert_candidate_snapshots s WHERE {where} "
+            "AND COALESCE(s.threat_type, '') != '' ORDER BY s.threat_type"
+        ),
+        params,
+    ).fetchall()
+    result["threat_type"] = [row[0] for row in threat_rows]
+
+    apt_rows = db.execute(
+        text(
+            f"SELECT DISTINCT s.std_apt_org FROM alert_candidate_snapshots s WHERE {where} "
+            "AND COALESCE(s.std_apt_org, '') != '' ORDER BY s.std_apt_org"
+        ),
+        params,
+    ).fetchall()
+    result["std_apt_org"] = [row[0] for row in apt_rows]
+
+    port_rows = db.execute(
+        text(
+            f"SELECT DISTINCT s.port FROM alert_candidate_snapshots s WHERE {where} "
+            "AND COALESCE(s.port, '') != '' ORDER BY s.port"
+        ),
+        params,
+    ).fetchall()
+    result["port"] = [row[0] for row in port_rows]
+
+    tag_rows = db.execute(
+        text(
+            "SELECT DISTINCT st.tag_name "
+            "FROM alert_candidate_snapshot_tags st "
+            "JOIN alert_candidate_snapshots s ON s.id = st.snapshot_id "
+            f"WHERE {where} ORDER BY st.tag_name"
+        ),
+        params,
+    ).fetchall()
+    result["device_tags"] = [row[0] for row in tag_rows]
+
+    badge_rows = db.execute(
+        text(
+            "SELECT DISTINCT sb.badge_label "
+            "FROM alert_candidate_snapshot_badges sb "
+            "JOIN alert_candidate_snapshots s ON s.id = sb.snapshot_id "
+            f"WHERE {where} ORDER BY sb.badge_label"
+        ),
+        params,
+    ).fetchall()
+    result["badges"] = [row[0] for row in badge_rows]
+
+    return result
+
+
+def _snapshot_sort_clause(sort_field, sort_direction):
+    direction = "ASC" if sort_direction == "ASC" else "DESC"
+    mapping = {
+        "candidate_score": f"s.candidate_score {direction}, s.last_alert_time DESC, s.id DESC",
+        "device_id": f"COALESCE(s.device_id, '') COLLATE NOCASE {direction}, s.id DESC",
+        "source_ip": f"COALESCE(s.source_ip, '') COLLATE NOCASE {direction}, s.id DESC",
+        "target": f"COALESCE(s.target, '') COLLATE NOCASE {direction}, s.id DESC",
+        "port": f"COALESCE(s.port, '') COLLATE NOCASE {direction}, s.id DESC",
+        "threat_type": f"COALESCE(s.threat_type, '') COLLATE NOCASE {direction}, s.id DESC",
+        "std_apt_org": f"COALESCE(s.std_apt_org, '') COLLATE NOCASE {direction}, s.id DESC",
+        "analysis_status": f"COALESCE(s.analysis_status, '') COLLATE NOCASE {direction}, s.id DESC",
+        "is_focused": f"COALESCE(s.is_focused, 0) {direction}, s.id DESC",
+        "first_alert_time": f"COALESCE(s.first_alert_time, '') {direction}, s.id DESC",
+        "last_alert_time": f"COALESCE(s.last_alert_time, '') {direction}, s.id DESC",
+        "alert_count": f"COALESCE(s.alert_count, 0) {direction}, s.id DESC",
+        "device_alert_count": f"COALESCE(s.heat_device_alert_count, 0) {direction}, s.id DESC",
+        "device_target_count": f"COALESCE(s.heat_device_target_count, 0) {direction}, s.id DESC",
+        "target_alert_count": f"COALESCE(s.heat_target_alert_count, 0) {direction}, s.id DESC",
+        "target_device_count": f"COALESCE(s.heat_target_device_count, 0) {direction}, s.id DESC",
+        "source_ip_count": f"COALESCE(s.source_ip_count, 0) {direction}, s.id DESC",
+    }
+    return mapping.get(sort_field, "s.candidate_score DESC, s.last_alert_time DESC, s.id DESC")
+
+
+def _deserialize_snapshot_row(row_dict):
+    item = dict(row_dict)
+    item.pop("badges_json", None)
+    item.pop("device_tags_json", None)
+    item["badges"] = []
+    item["device_tags"] = []
+    item["event"] = json.loads(item.pop("event_json", "null") or "null")
+    item["traced"] = json.loads(item.pop("trace_json", "null") or "null")
+    item["candidate_rule_ids"] = json.loads(item.pop("candidate_rule_ids_json", "[]") or "[]")
+    item["candidate_reasons"] = json.loads(item.pop("candidate_reasons_json", "[]") or "[]")
+    item["heat_summary"] = json.loads(item.pop("heat_summary_json", "{}") or "{}")
+    item["heat"] = {
+        "target_alert_count": item.pop("heat_target_alert_count", 0),
+        "target_device_count": item.pop("heat_target_device_count", 0),
+        "device_alert_count": item.pop("heat_device_alert_count", 0),
+        "device_target_count": item.pop("heat_device_target_count", 0),
+        "source_ip_alert_count": item.pop("heat_source_ip_alert_count", 0),
+    }
+    item["sort_signals"] = {
+        "priority_rank": item.pop("sort_priority_rank", 0),
+        "rule_hits": item.pop("sort_rule_hits", 0),
+        "target_device_count": item.pop("sort_target_device_count", 0),
+        "target_alert_count": item.pop("sort_target_alert_count", 0),
+        "source_ip_alert_count": item.pop("sort_source_ip_alert_count", 0),
+        "trace_status": item.pop("sort_trace_status", None),
+        "event_status": item.pop("sort_event_status", None),
+    }
+    item["candidate_priority"] = {
+        "id": item.get("candidate_priority"),
+        "label": item.get("candidate_priority_label"),
+        "rank": item["sort_signals"]["priority_rank"],
+    }
+    item["trace_status_label"] = {
+        "active": "追踪 TTL 内",
+        "expired": "历史追踪",
+    }.get(item.get("trace_status"), "未追踪")
+    item["script_bucket"] = item.get("target_kind") if item.get("target_kind") in {"ip", "domain"} else "other"
+    return item
+
+
+def _attach_snapshot_relations(db, items, snapshot_version):
+    if not items:
+        return items
+    snapshot_ids = [item.get("id") for item in items if item.get("id") is not None]
+    if not snapshot_ids:
+        return items
+
+    badge_placeholders = ", ".join(f":sid_{index}" for index in range(len(snapshot_ids)))
+    params = {"snapshot_version": snapshot_version}
+    params.update({f"sid_{index}": value for index, value in enumerate(snapshot_ids)})
+
+    badge_rows = db.execute(
+        text(
+            "SELECT snapshot_id, badge_name, badge_label, badge_color "
+            "FROM alert_candidate_snapshot_badges "
+            "WHERE snapshot_version = :snapshot_version "
+            f"AND snapshot_id IN ({badge_placeholders})"
+        ),
+        params,
+    ).fetchall()
+    badge_map = {}
+    for row in badge_rows:
+        badge_map.setdefault(row[0], []).append(
+            {"name": row[1], "label": row[2], "color": row[3]}
+        )
+
+    tag_rows = db.execute(
+        text(
+            "SELECT snapshot_id, tag_id, tag_name, tag_color "
+            "FROM alert_candidate_snapshot_tags "
+            "WHERE snapshot_version = :snapshot_version "
+            f"AND snapshot_id IN ({badge_placeholders})"
+        ),
+        params,
+    ).fetchall()
+    tag_map = {}
+    for row in tag_rows:
+        tag_map.setdefault(row[0], []).append(
+            {"id": row[1], "name": row[2], "color": row[3]}
+        )
+
+    for item in items:
+        sid = item.get("id")
+        item["badges"] = badge_map.get(sid, [])
+        item["device_tags"] = tag_map.get(sid, [])
+    return items
+
+
 def _query_items(db, where, params, page, page_size, badges_filter=None, sort_by=None, sort_order=None):
     sort_by_map = {
         "device_id": "a.device_id",
@@ -613,9 +899,8 @@ def _query_items(db, where, params, page, page_size, badges_filter=None, sort_by
             ),
             params,
         ).fetchall()
-        items = _make_items(db, all_rows, cross_day_pairs, lateral_ips, badges_filter)
-        heat_maps = _heat_maps_for_rows(db, where, params, all_rows)
-        source_ip_maps = _source_ip_maps_for_rows(db, where, params, all_rows)
+        items = _make_items(db, all_rows, cross_day_pairs, lateral_ips, badges_filter, trace_index=_preload_trace_index(db))
+        heat_maps, source_ip_maps = _heat_and_source_maps(db, where, params, all_rows)
         for item in items:
             sip_key = (item.get("device_id") or "", item.get("target") or "", item.get("port") or "")
             sip_data = source_ip_maps.get(sip_key, {})
@@ -646,9 +931,8 @@ def _query_items(db, where, params, page, page_size, badges_filter=None, sort_by
         ),
         query_params,
     ).fetchall()
-    items = _make_items(db, rows, cross_day_pairs, lateral_ips)
-    heat_maps = _heat_maps_for_rows(db, where, params, rows)
-    source_ip_maps = _source_ip_maps_for_rows(db, where, params, rows)
+    items = _make_items(db, rows, cross_day_pairs, lateral_ips, trace_index=_preload_trace_index(db))
+    heat_maps, source_ip_maps = _heat_and_source_maps(db, where, params, rows)
     for item in items:
         sip_key = (item.get("device_id") or "", item.get("target") or "", item.get("port") or "")
         sip_data = source_ip_maps.get(sip_key, {})
@@ -693,8 +977,8 @@ def _base_filter_params(
     return where, params
 
 
-def _candidate_scope_meta():
-    return {
+def _candidate_scope_meta(snapshot_status=None, message=None, rebuilding=None):
+    meta = {
         "platform_scope": {
             "imports_all_sheets": True,
             "imports_original_alert_rows": True,
@@ -727,6 +1011,13 @@ def _candidate_scope_meta():
             "result counts can differ from the old script because platform and script scopes are different",
         ],
     }
+    if snapshot_status is not None:
+        meta["snapshot_status"] = snapshot_status
+    if message:
+        meta["message"] = message
+    if rebuilding is not None:
+        meta["snapshot_rebuilding"] = rebuilding
+    return meta
 
 
 def _candidate_filter_sql():
@@ -852,84 +1143,79 @@ def _sort_candidate_items(items, sort_field=None, sort_direction="DESC"):
     )
 
 
-def _heat_maps_for_rows(db, base_where, base_params, rows):
-    device_ids = sorted({row._mapping.get("device_id") for row in rows if row._mapping.get("device_id")})
-    source_ips = sorted({row._mapping.get("source_ip") for row in rows if row._mapping.get("source_ip")})
-    targets = sorted({row._mapping.get("target") for row in rows if row._mapping.get("target")})
+def _get_sorted_candidate_view(cache_entry, sort_field=None, sort_direction="DESC"):
+    normalized_sort_field = sort_field or "candidate_score"
+    normalized_sort_direction = sort_direction or "DESC"
+    sort_key = f"{normalized_sort_field}:{normalized_sort_direction}"
+    sorted_views = cache_entry.setdefault("sorted_views", {})
+    if sort_key in sorted_views:
+        return sorted_views[sort_key]
 
+    sorted_items = list(cache_entry["items"])
+    _sort_candidate_items(
+        sorted_items,
+        sort_field=normalized_sort_field,
+        sort_direction=normalized_sort_direction,
+    )
+    sorted_views[sort_key] = sorted_items
+    return sorted_items
+
+
+def _heat_and_source_maps(db, base_where, base_params, rows):
+    """Single consolidated query: replaces _heat_maps_for_rows + _source_ip_maps_for_rows.
+    5+1 separate scans → 1 scan. Returns heat maps and source_ip maps."""
     device_alert_counts = {}
     device_target_counts = {}
     source_ip_alert_counts = {}
     target_alert_counts = {}
     target_device_counts = {}
+    source_ip_map = {}
 
-    if device_ids:
-        # Device target count: distinct targets per device_id within date range
-        params = dict(base_params)
-        placeholders = ", ".join(f":devtarget_{index}" for index in range(len(device_ids)))
-        params.update({f"devtarget_{index}": value for index, value in enumerate(device_ids)})
-        rows_result = db.execute(
-            text(
-                f"""
-                SELECT a.device_id, COUNT(DISTINCT a.target) AS target_count
-                FROM alerts a
-                WHERE {base_where} AND a.device_id IN ({placeholders})
-                GROUP BY a.device_id
-                """
-            ),
-            params,
-        ).fetchall()
-        device_target_counts = {row[0]: row[1] for row in rows_result}
-        params = dict(base_params)
-        placeholders = ", ".join(f":device_heat_{index}" for index in range(len(device_ids)))
-        params.update({f"device_heat_{index}": value for index, value in enumerate(device_ids)})
-        rows_result = db.execute(
-            text(
-                f"""
-                SELECT a.device_id, a.target, COALESCE(a.port, '') as port, COUNT(*) AS alert_count
-                FROM alerts a
-                WHERE {base_where} AND a.device_id IN ({placeholders})
-                GROUP BY a.device_id, a.target, COALESCE(a.port, '')
-                """
-            ),
-            params,
-        ).fetchall()
-        device_alert_counts = {(row[0], row[1], row[2]): row[3] for row in rows_result}
+    # Build lookup keys for source_ip_map (only need these, not all)
+    needed_keys = {
+        (row._mapping.get("device_id") or "", row._mapping.get("target") or "", row._mapping.get("port") or "")
+        for row in rows
+    }
 
-    if source_ips:
-        params = dict(base_params)
-        placeholders = ", ".join(f":source_heat_{index}" for index in range(len(source_ips)))
-        params.update({f"source_heat_{index}": value for index, value in enumerate(source_ips)})
-        rows_result = db.execute(
-            text(
-                f"""
-                SELECT a.source_ip, COUNT(*) AS alert_count
-                FROM alerts a
-                WHERE {base_where} AND a.source_ip IN ({placeholders})
-                GROUP BY a.source_ip
-                """
-            ),
-            params,
-        ).fetchall()
-        source_ip_alert_counts = {row[0]: row[1] for row in rows_result}
+    # Single pass: all aggregates + source_ip aggregation
+    agg_rows = db.execute(
+        text(
+            f"""
+            SELECT a.device_id, a.target, COALESCE(a.port, '') as port,
+                   a.source_ip,
+                   COUNT(*) AS alert_count,
+                   GROUP_CONCAT(DISTINCT a.source_ip) as source_ips,
+                   COUNT(DISTINCT a.source_ip) as source_ip_count
+            FROM alerts a
+            WHERE {base_where}
+            GROUP BY a.device_id, a.target, COALESCE(a.port, '')
+            """
+        ),
+        base_params,
+    ).fetchall()
 
-    if targets:
-        params = dict(base_params)
-        placeholders = ", ".join(f":target_heat_{index}" for index in range(len(targets)))
-        params.update({f"target_heat_{index}": value for index, value in enumerate(targets)})
-        rows_result = db.execute(
-            text(
-                f"""
-                SELECT a.target, COUNT(*) AS alert_count, COUNT(DISTINCT a.device_id) AS device_count
-                FROM alerts a
-                WHERE {base_where} AND a.target IN ({placeholders})
-                GROUP BY a.target
-                """
-            ),
-            params,
-        ).fetchall()
-        target_alert_counts = {row[0]: row[1] for row in rows_result}
-        target_device_counts = {row[0]: row[2] for row in rows_result}
+    for row in agg_rows:
+        device_id, target, port, source_ip, count, raw_ips, ip_count = (
+            row[0], row[1], row[2], row[3], row[4], row[5], row[6]
+        )
+        device_alert_counts[(device_id, target, port)] = count
+        device_target_counts[device_id] = device_target_counts.get(device_id, 0) + 1
+        target_alert_counts[target] = target_alert_counts.get(target, 0) + count
+        source_ip_alert_counts[source_ip] = source_ip_alert_counts.get(source_ip, 0) + count if source_ip else 0
+
+        key = (device_id, target, port)
+        if key in needed_keys:
+            source_ip_map[key] = {
+                "source_ips": raw_ips.replace(",", " | ") if raw_ips else "",
+                "source_ip_count": ip_count or 0,
+            }
+
+    # Compute target_device_counts
+    target_devices_map = {}
+    for row in agg_rows:
+        target_devices_map.setdefault(row[1], set()).add(row[0])
+    for target, devs in target_devices_map.items():
+        target_device_counts[target] = len(devs)
 
     return {
         "device_alert_counts": device_alert_counts,
@@ -937,7 +1223,7 @@ def _heat_maps_for_rows(db, base_where, base_params, rows):
         "source_ip_alert_counts": source_ip_alert_counts,
         "target_alert_counts": target_alert_counts,
         "target_device_counts": target_device_counts,
-    }
+    }, source_ip_map
 
 
 def _source_ip_maps_for_rows(db, base_where, base_params, rows):
@@ -996,9 +1282,8 @@ def _decorate_candidate_items(db, base_where, base_params, rows, badges_filter=N
         need_cross_day=need_cross_day,
         need_lateral=need_lateral,
     )
-    items = _make_items(db, rows, cross_day_pairs, lateral_ips, badges_filter)
-    heat_maps = _heat_maps_for_rows(db, base_where, base_params, rows)
-    source_ip_maps = _source_ip_maps_for_rows(db, base_where, base_params, rows)
+    items = _make_items(db, rows, cross_day_pairs, lateral_ips, badges_filter, trace_index=_preload_trace_index(db))
+    heat_maps, source_ip_maps = _heat_and_source_maps(db, base_where, base_params, rows)
 
     decorated = []
     for item in items:
@@ -1451,88 +1736,142 @@ def query_alert_candidates(
     db=Depends(get_db),
 ):
     hide_traced, hide_closed = _resolve_hide_defaults(hide_traced, hide_closed)
-    where, params = _build_where(
-        date_start=date_start,
-        date_end=date_end,
-        target_type=target_type,
-        device_tags=device_tags,
-        exclude_device_tags=exclude_device_tags,
-        threat_types=threat_types,
-        threat_levels=threat_levels,
-        apt_tiers=apt_tiers,
-        hide_traced=hide_traced,
-        hide_closed=hide_closed,
-        keyword=keyword,
-        alert_count_max=alert_count_max,
-    )
-
-    # Build cache key from filter params (excl. sort/page)
-    cache_filter = {
-        "date_start": date_start,
-        "date_end": date_end,
-        "target_type": target_type,
-        "device_tags": device_tags,
-        "exclude_device_tags": exclude_device_tags,
-        "threat_types": threat_types,
-        "threat_levels": threat_levels,
-        "apt_tiers": apt_tiers,
-        "hide_traced": hide_traced,
-        "hide_closed": hide_closed,
-        "keyword": keyword,
-        "alert_count_max": alert_count_max,
-        "badges_filter": badges_filter,
-        "target_kind": target_kind,
-    }
-    cache_key = _cache_key_for_params(cache_filter)
-    cached = _candidate_cache.get(cache_key)
-
     sort_field, sort_direction = _normalize_candidate_sort(sort_by, sort_order)
     if not sort_field:
         sort_field = "candidate_score"
         sort_direction = "DESC"
-
-    if cached and (time.time() - cached["ts"]) < CACHE_TTL:
-        # Cache hit: re-sort full cached items, page in Python
-        all_items = list(cached["items"])  # shallow copy for safe sort
-        _sort_candidate_items(all_items, sort_field=sort_field, sort_direction=sort_direction)
-        filter_options = _build_filter_options(all_items)
-        start = (page - 1) * page_size
+    meta_row = get_snapshot_meta(db, snapshot_type=SNAPSHOT_TYPE_ALERT_CANDIDATES)
+    active_version = get_active_snapshot_version(db, snapshot_type=SNAPSHOT_TYPE_ALERT_CANDIDATES)
+    if not active_version:
+        if (meta_row or {}).get("status") != SNAPSHOT_STATUS_BUILDING:
+            try:
+                rebuild_candidate_snapshots_async()
+            except Exception:
+                pass
         return {
-            "items": all_items[start : start + page_size],
-            "total": cached["total"],
-            "page": page,
+            "items": [],
+            "total": 0,
+            "page": 1,
             "page_size": page_size,
-            "meta": _candidate_scope_meta(),
-            "filter_options": filter_options,
-            "x_cache": "hit",
+            "meta": _candidate_scope_meta(
+                snapshot_status=SNAPSHOT_STATUS_BUILDING,
+                message="候选快照正在构建中，请稍候...",
+            ),
+            "filter_options": _snapshot_empty_filter_options(),
         }
 
-    # Cache miss: fetch ALL candidate items (no SQL LIMIT), decorate, cache
-    all_items, total = _query_all_candidate_items(
-        db, where, params,
-        badges_filter=badges_filter,
-        target_kind=target_kind,
-    )
+    conditions = ["s.snapshot_version = :snapshot_version"]
+    params = {"snapshot_version": active_version}
 
-    _evict_cache_if_needed()
-    _candidate_cache[cache_key] = {
-        "items": all_items,
-        "total": total,
-        "ts": time.time(),
-    }
+    if date_start:
+        conditions.append("COALESCE(s.first_alert_time, '') >= :date_start")
+        params["date_start"] = f"{date_start} 00:00:00"
+    if date_end:
+        conditions.append("COALESCE(s.first_alert_time, '') <= :date_end_bound")
+        params["date_end_bound"] = f"{date_end} 23:59:59"
+    if target_type:
+        conditions.append("s.target_type = :target_type")
+        params["target_type"] = target_type
+    if target_kind and target_kind != "all":
+        conditions.append("s.target_kind = :target_kind")
+        params["target_kind"] = target_kind
 
-    # Sort and page from cache
-    _sort_candidate_items(all_items, sort_field=sort_field, sort_direction=sort_direction)
-    filter_options = _build_filter_options(all_items)
-    start = (page - 1) * page_size
+    selected_threat_types = _csv_values(threat_types)
+    if selected_threat_types:
+        clauses = []
+        for index, item in enumerate(selected_threat_types):
+            key = f"tt_{index}"
+            clauses.append(f"COALESCE(s.threat_type, '') LIKE :{key}")
+            params[key] = f"%{item}%"
+        conditions.append("(" + " OR ".join(clauses) + ")")
+
+    levels = _csv_values(threat_levels)
+    if levels:
+        placeholders = ", ".join(f":tl_{index}" for index in range(len(levels)))
+        conditions.append(f"s.threat_level IN ({placeholders})")
+        for index, level in enumerate(levels):
+            params[f"tl_{index}"] = level
+
+    tiers = _csv_values(apt_tiers)
+    if tiers:
+        placeholders = ", ".join(f":at_{index}" for index in range(len(tiers)))
+        conditions.append(f"s.apt_org_tier IN ({placeholders})")
+        for index, tier in enumerate(tiers):
+            params[f"at_{index}"] = tier
+
+    tag_ids = _csv_values(device_tags)
+    if tag_ids:
+        placeholders = ", ".join(f":tag_{index}" for index in range(len(tag_ids)))
+        conditions.append(
+            "EXISTS (SELECT 1 FROM alert_candidate_snapshot_tags st "
+            f"WHERE st.snapshot_id = s.id AND st.snapshot_version = s.snapshot_version AND st.tag_id IN ({placeholders}))"
+        )
+        for index, tag_id in enumerate(tag_ids):
+            params[f"tag_{index}"] = int(tag_id)
+
+    exclude_tag_ids = _csv_values(exclude_device_tags)
+    if exclude_tag_ids:
+        placeholders = ", ".join(f":et_{index}" for index in range(len(exclude_tag_ids)))
+        conditions.append(
+            "NOT EXISTS (SELECT 1 FROM alert_candidate_snapshot_tags st "
+            f"WHERE st.snapshot_id = s.id AND st.snapshot_version = s.snapshot_version AND st.tag_id IN ({placeholders}))"
+        )
+        for index, tag_id in enumerate(exclude_tag_ids):
+            params[f"et_{index}"] = int(tag_id)
+
+    if hide_traced:
+        conditions.append("COALESCE(s.trace_status, 'none') != 'active'")
+    if hide_closed:
+        conditions.append("(s.event_status IS NULL OR s.event_status != 'closed')")
+    if alert_count_max is not None:
+        conditions.append("COALESCE(s.alert_count, 0) <= :alert_count_max")
+        params["alert_count_max"] = alert_count_max
+    if keyword:
+        params["kw"] = f"%{keyword}%"
+        conditions.append(
+            "(COALESCE(s.device_id, '') LIKE :kw OR COALESCE(s.source_ip, '') LIKE :kw "
+            "OR COALESCE(s.target, '') LIKE :kw OR COALESCE(s.threat_type, '') LIKE :kw "
+            "OR COALESCE(s.apt_org, '') LIKE :kw OR COALESCE(s.std_apt_org, '') LIKE :kw)"
+        )
+
+    badge_filters = _csv_values(badges_filter)
+    for index, badge_name in enumerate(badge_filters):
+        key = f"badge_{index}"
+        params[key] = badge_name
+        conditions.append(
+            "EXISTS (SELECT 1 FROM alert_candidate_snapshot_badges sb "
+            f"WHERE sb.snapshot_id = s.id AND sb.snapshot_version = s.snapshot_version AND sb.badge_name = :{key})"
+        )
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    total = db.execute(
+        text(f"SELECT COUNT(*) FROM alert_candidate_snapshots s WHERE {where}"),
+        params,
+    ).scalar() or 0
+
+    query_params = dict(params)
+    query_params["limit"] = page_size
+    query_params["offset"] = (page - 1) * page_size
+    rows = db.execute(
+        text(
+            f"SELECT s.* FROM alert_candidate_snapshots s WHERE {where} "
+            f"ORDER BY {_snapshot_sort_clause(sort_field, sort_direction)} LIMIT :limit OFFSET :offset"
+        ),
+        query_params,
+    ).fetchall()
+
+    items = [_deserialize_snapshot_row(dict(row._mapping)) for row in rows]
+    items = _attach_snapshot_relations(db, items, active_version)
+    filter_options = _build_snapshot_filter_options(db, where, params)
+    meta_status = "ready" if active_version else (meta_row or {}).get("status", "ready")
+    rebuilding = (meta_row or {}).get("status") == SNAPSHOT_STATUS_BUILDING and bool(active_version)
     return {
-        "items": all_items[start : start + page_size],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
-        "meta": _candidate_scope_meta(),
+        "meta": _candidate_scope_meta(snapshot_status=meta_status, rebuilding=rebuilding),
         "filter_options": filter_options,
-        "x_cache": "miss",
     }
 
 

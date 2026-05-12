@@ -4,6 +4,7 @@ from sqlalchemy import text
 from datetime import datetime
 import pandas as pd
 from backend.utils.db import get_db, write_audit
+from backend.services.snapshot_builder import request_snapshot_refresh
 
 
 router = APIRouter(prefix="/api/traced", tags=["traced"])
@@ -82,6 +83,7 @@ def create_traced(data: Any = Body(...), db=Depends(get_db)):
     if ids:
         write_audit(db, "create_traced", "traced_target", ",".join(str(i) for i in ids), {"count": len(ids)})
     db.commit()
+    request_snapshot_refresh("traced")
     return {"ids": ids, "count": len(ids)}
 
 
@@ -146,6 +148,8 @@ async def import_traced(file: UploadFile = File(...), db=Depends(get_db)):
         "failed": failed,
     })
     db.commit()
+    if inserted or skipped:
+        request_snapshot_refresh("traced")
     return {"inserted": inserted, "skipped": skipped, "failed": failed, "failures": failures}
 
 
@@ -161,6 +165,7 @@ def update_traced(traced_id: int, data: Any = Body(...), db=Depends(get_db)):
         db.execute(text(f"UPDATE traced_targets SET {', '.join(updates)} WHERE id = :id"), params)
         write_audit(db, "update_traced", "traced_target", traced_id, data)
         db.commit()
+        request_snapshot_refresh("traced")
     return {"ok": True}
 
 
@@ -169,4 +174,5 @@ def delete_traced(traced_id: int, db=Depends(get_db)):
     db.execute(text("DELETE FROM traced_targets WHERE id = :id"), {"id": traced_id})
     write_audit(db, "delete_traced", "traced_target", traced_id)
     db.commit()
+    request_snapshot_refresh("traced")
     return {"ok": True}

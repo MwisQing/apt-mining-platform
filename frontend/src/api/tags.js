@@ -53,3 +53,7 @@ export function removeDeviceTag(deviceId, tagId) {
 export function fetchDeviceTags(deviceId) {
   return api.get(`/api/tags/devices/${deviceId}/tags`)
 }
+
+export function updateTag(tagId, data) {
+  return api.patch(`/api/tags/tags/${tagId}`, data)
+}

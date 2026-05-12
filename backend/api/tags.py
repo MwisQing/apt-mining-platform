@@ -4,6 +4,7 @@ from sqlalchemy import text
 from datetime import datetime
 import json
 from backend.utils.db import get_db, write_audit
+from backend.services.snapshot_builder import request_snapshot_refresh
 
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
@@ -14,6 +15,11 @@ def _invalidate_candidate_cache():
     try:
         from backend.api import alerts
         alerts._candidate_cache.clear()
+        alerts._invalidate_full_cache()
+    except Exception:
+        pass
+    try:
+        request_snapshot_refresh("tags")
     except Exception:
         pass
 
@@ -172,6 +178,30 @@ async def _read_text_upload(file: UploadFile):
 def list_tags(db=Depends(get_db)):
     rows = db.execute(text("SELECT * FROM tags ORDER BY created_at DESC")).fetchall()
     return [dict(r._mapping) for r in rows]
+
+
+@router.patch("/tags/{tag_id}")
+def update_tag(tag_id: int, data: Any = Body(...), db=Depends(get_db)):
+    """Update tag name and/or color. Body: { name?, color? }"""
+    tag = db.execute(text("SELECT id FROM tags WHERE id = :id"), {"id": tag_id}).fetchone()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    updates = []
+    params = {"id": tag_id}
+    if "name" in data:
+        new_name = (data["name"] or "").strip()
+        if new_name:
+            updates.append("name = :name")
+            params["name"] = new_name
+    if "color" in data:
+        updates.append("color = :color")
+        params["color"] = data["color"]
+    if updates:
+        db.execute(text(f"UPDATE tags SET {', '.join(updates)} WHERE id = :id"), params)
+        write_audit(db, "update_tag", "tag", tag_id, {k: params.get(k) for k in ("name", "color") if k in params})
+        db.commit()
+        _invalidate_candidate_cache()
+    return {"ok": True}
 
 
 @router.get("/batches")
