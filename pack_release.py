@@ -23,7 +23,7 @@ os.chdir(SCRIPT_DIR)
 EXCLUDE_DIRS = {
     "data", "uploads", "backups", "venv", "node_modules",
     ".git", ".claude", "__pycache__", "releases", "_release_tmp",
-    "logs",
+    "logs","uploads-test",
 }
 EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
 
