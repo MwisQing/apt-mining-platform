@@ -38,9 +38,12 @@
             <!-- 正在处理的任务 -->
             <div v-if="processingImport" class="processing-status">
               <el-icon class="is-loading"><Loading /></el-icon>
-              <span>正在处理：{{ processingImport.source_file }}</span>
+              <span>正在解析：{{ processingImport.source_file }}</span>
               <span v-if="processingImport.total_rows > 0" class="processing-detail">
-                （已处理 {{ processedCount }} / {{ processingImport.total_rows }} 行）
+                （已处理 {{ processedCount }} / {{ processingImport.total_rows }} 行，{{ processingPercent }}%）
+              </span>
+              <span v-else class="processing-detail">
+                （正在读取文件，请稍候...）
               </span>
               <el-tag type="primary" size="small" class="processing-tag">处理中</el-tag>
               <el-progress
@@ -49,6 +52,14 @@
                 :stroke-width="6"
                 :show-text="false"
                 class="processing-progress"
+              />
+              <!-- total_rows 未知时显示不确定进度条 -->
+              <el-progress
+                v-else
+                :percentage="0"
+                :show-text="false"
+                :stroke-width="6"
+                class="processing-progress processing-progress--unknown"
               />
             </div>
           </el-card>
@@ -854,8 +865,8 @@ async function loadImports() {
     const list = Array.isArray(res) ? res : (res.items || [])
     importsList.value = list
 
-    // 检查是否有正在处理的任务
-    const processing = list.find(i => i.status === 'processing')
+    // 检查是否有正在处理的任务（processing 或 uploaded 都表示处理中）
+    const processing = list.find(i => i.status === 'processing' || i.status === 'uploaded')
     if (processing) {
       processingImport.value = processing
       startImportPolling(processing.id)
@@ -875,8 +886,9 @@ function startImportPolling(id) {
   importPollTimer = setInterval(async () => {
     try {
       const detail = await fetchImport(id)
-      if (detail.status !== 'processing') {
+      if (detail.status !== 'processing' && detail.status !== 'uploaded') {
         processingImport.value = null
+        pendingImportJobId.value = null
         stopImportPolling()
         loadImports()
         ElMessage.success('导入完成：' + detail.source_file)
@@ -909,20 +921,34 @@ async function handleUploadExcel({ file }) {
   uploadProgress.value = 0
   uploadingFileName.value = file.name
   try {
-    await uploadExcel([file], (pct) => {
+    const result = await uploadExcel([file], (pct) => {
       uploadProgress.value = pct
     })
     uploadProgress.value = 100
-    ElMessage.success('已提交，正在后台处理：' + file.name)
-    loadImports()
+    // 立即显示处理状态，不要等 loadImports 轮询才显示
+    const jobs = result?.jobs || []
+    if (jobs.length > 0) {
+      processingImport.value = {
+        source_file: jobs[0].source_file,
+        status: 'processing',
+        total_rows: 0,
+        rows_inserted: 0,
+        rows_skipped: 0,
+        rows_failed: 0,
+        raw_rows: 0,
+      }
+      pendingImportJobId.value = jobs[0].id
+      startImportPolling(jobs[0].id)
+    }
+    ElMessage.success('文件已接收，正在解析：' + file.name)
   } catch (e) {
     ElMessage.error('上传失败: ' + e.message)
   } finally {
-    // 重置上传进度
-    setTimeout(() => {
-      uploadProgress.value = 0
-      uploadingFileName.value = ''
-    }, 1500)
+    // 上传进度条立即消失
+    uploadProgress.value = 0
+    uploadingFileName.value = ''
+    // 重新加载导入历史
+    loadImports()
   }
 }
 
@@ -1773,6 +1799,19 @@ onBeforeUnmount(() => {
 .processing-progress {
   width: 100%;
   margin-top: 4px;
+}
+
+/* 不确定进度的进度条：用条纹动画表示「正在处理」 */
+.processing-progress--unknown :deep(.el-progress-bar__inner) {
+  background: linear-gradient(90deg, var(--primary) 25%, var(--accent) 25%, var(--accent) 50%, var(--primary) 50%, var(--primary) 75%, var(--accent) 75%);
+  background-size: 200% 100%;
+  animation: processing-stripe 1.5s linear infinite;
+  min-width: 100% !important;
+}
+
+@keyframes processing-stripe {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 .processing-tag {
