@@ -10,6 +10,7 @@ export default defineConfig({
       '/api': {
         target: apiTarget,
         changeOrigin: true,
+        timeout: 600000, // 10分钟，与 uploadApi 超时一致
       },
     },
   },

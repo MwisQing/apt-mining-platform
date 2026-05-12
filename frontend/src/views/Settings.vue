@@ -888,7 +888,6 @@ function startImportPolling(id) {
       const detail = await fetchImport(id)
       if (detail.status !== 'processing' && detail.status !== 'uploaded') {
         processingImport.value = null
-        pendingImportJobId.value = null
         stopImportPolling()
         loadImports()
         ElMessage.success('导入完成：' + detail.source_file)
@@ -937,12 +936,18 @@ async function handleUploadExcel({ file }) {
         rows_failed: 0,
         raw_rows: 0,
       }
-      pendingImportJobId.value = jobs[0].id
       startImportPolling(jobs[0].id)
     }
     ElMessage.success('文件已接收，正在解析：' + file.name)
   } catch (e) {
-    ElMessage.error('上传失败: ' + e.message)
+    // 超时不代表失败——后端可能已经在处理了
+    const isTimeout = e.message?.includes('timeout') || e.message?.includes('time')
+    if (isTimeout) {
+      ElMessage.warning('上传时间较长，文件可能已在后台处理。请查看导入历史确认。')
+      loadImports()
+    } else {
+      ElMessage.error('上传失败: ' + e.message)
+    }
   } finally {
     // 上传进度条立即消失
     uploadProgress.value = 0
