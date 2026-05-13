@@ -327,10 +327,14 @@ def init_git_if_needed() -> bool:
 
 
 def fix_permissions():
-    """On Linux/macOS, ensure .py scripts are executable after code update."""
+    """On Linux/macOS, ensure scripts are executable after code update."""
     if os.name == "nt":
         return True  # Windows doesn't need chmod
-    scripts = ["start.py", "stop.py", "install.py", "upgrade.py", "pack_release.py", "push_release.py"]
+    scripts = [
+        "start.py", "stop.py", "install.py", "upgrade.py",
+        "pack_release.py", "push_release.py",
+        "start.sh", "stop.sh", "install.sh",
+    ]
     for name in scripts:
         p = SCRIPT_DIR / name
         if p.exists():

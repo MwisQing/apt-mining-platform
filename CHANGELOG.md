@@ -8,7 +8,9 @@
 - 修复：`upgrade.py` `check_git()` 使用 `command -v git`（Linux）替代 `where git`（Windows）
 - 修复：`upgrade.py` `install_backend_deps()` venv 路径跨平台兼容
 - 修复：`pack_release.py` vite build 命令移除 `--registry` 参数（vite 不识别）
-- 新增：`upgrade.py` 更新后自动 `chmod +x` 脚本文件（Linux/macOS）
+- 新增：`upgrade.py` 更新后自动 `chmod +x` 所有 Python 和 .sh 运维脚本（Linux/macOS），包含 `start.sh`/`stop.sh`/`install.sh`
+- 修复：`upgrade.py` `build_frontend()` 检测到已有 `frontend/dist/index.html` 时跳过 `npm install + build`（无外网服务器避免卡死）
+- 修复：`install.py` 跳过已存在的 `frontend/dist` 构建产物
 
 ## v3.2.0 - 2026-05-12
 
