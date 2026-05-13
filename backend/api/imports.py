@@ -12,6 +12,7 @@ import json
 import csv
 import io
 import time
+from pathlib import Path
 from sqlalchemy.exc import IntegrityError
 from backend.utils.db import get_db, get_session_local, get_engine, write_audit
 from backend.utils import get_path
@@ -24,6 +25,9 @@ router = APIRouter(prefix="/api/imports", tags=["imports"])
 IMPORT_PROGRESS_BATCH_SIZE = 100  # update progress every N rows during sheet parsing
 DB_LOCK_RETRY_ATTEMPTS = 12
 DB_LOCK_RETRY_DELAY_SECONDS = 1
+
+# Script directory for backup paths
+SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Import queue: files are queued and processed one at a time
 _import_queue = queue.Queue()
@@ -1228,3 +1232,70 @@ def repair_import_metadata(import_id: int, db=Depends(get_db)):
 
     db.commit()
     return {"ok": True, "stats": stats}
+
+
+@router.delete("/all")
+def delete_all_imports(backup: bool = Query(False), db=Depends(get_db)):
+    """删除所有已上传的 Excel 数据（告警、导入记录、明细等）。
+
+    当 backup=True 时，先备份当前 alerts 表到 backups/ 目录。
+    """
+    import shutil as _shutil
+
+    # Count what we're about to delete
+    alert_count = db.execute(text("SELECT COUNT(*) FROM alerts")).scalar() or 0
+    import_count = db.execute(text("SELECT COUNT(*) FROM imports")).scalar() or 0
+    row_count = db.execute(text("SELECT COUNT(*) FROM import_rows")).scalar() or 0
+    sheet_count = db.execute(text("SELECT COUNT(*) FROM import_sheets")).scalar() or 0
+
+    if alert_count == 0 and import_count == 0:
+        return {"ok": True, "message": "没有数据可删除", "deleted": {"alerts": 0, "imports": 0, "rows": 0, "sheets": 0}}
+
+    backup_path = ""
+    if backup:
+        # Backup alerts table to a new SQLite file
+        db_path = get_path("db")
+        backups_dir = SCRIPT_DIR / "backups" if "SCRIPT_DIR" in globals() else Path(__file__).resolve().parent.parent.parent / "backups"
+        backups_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backups_dir / f"workbench_before_clear_{timestamp}.db"
+        try:
+            _shutil.copy2(db_path, backup_path)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"数据库备份失败: {e}")
+
+    # Delete in order: rows -> sheets -> imports -> alerts (FK safety)
+    db.execute(text("DELETE FROM import_rows"))
+    db.execute(text("DELETE FROM import_sheets"))
+    db.execute(text("DELETE FROM imports"))
+    db.execute(text("DELETE FROM alerts"))
+    write_audit(db, "delete_all_imports", "import", None, {
+        "alerts_deleted": alert_count,
+        "imports_deleted": import_count,
+        "backup": backup_path or None,
+    })
+    db.commit()
+
+    # WAL checkpoint
+    db.close()
+    engine = get_engine()
+    raw_conn = engine.raw_connection()
+    try:
+        _checkpoint_after_import_delete(raw_conn)
+    except Exception:
+        pass
+    finally:
+        if raw_conn is not None:
+            raw_conn.close()
+
+    return {
+        "ok": True,
+        "message": "全部数据已删除",
+        "deleted": {
+            "alerts": alert_count,
+            "imports": import_count,
+            "rows": row_count,
+            "sheets": sheet_count,
+        },
+        "backup": backup_path or None,
+    }

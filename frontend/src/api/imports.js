@@ -45,3 +45,7 @@ export function deleteImport(id) {
 export function repairImportMetadata(id) {
   return api.post(`/api/imports/${id}/repair-metadata`)
 }
+
+export function deleteAllImports(backup = false) {
+  return api.delete('/api/imports/all', { params: { backup } })
+}

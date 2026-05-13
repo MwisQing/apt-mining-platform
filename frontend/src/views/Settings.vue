@@ -579,6 +579,10 @@
                 <el-icon><FolderOpened /></el-icon>
                 打开备份目录
               </el-button>
+              <el-button size="small" type="danger" @click="showClearAllDialog">
+                <el-icon><Delete /></el-icon>
+                清除全部上传数据
+              </el-button>
               <span class="data-hint">数据库备份位于 backups/ 目录</span>
             </div>
           </el-card>
@@ -808,15 +812,43 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 清除全部上传数据 Dialog -->
+    <el-dialog v-model="clearAllDialogVisible" title="清除全部上传数据" width="520px">
+      <div class="clear-all-warning">
+        <el-icon class="warning-icon"><WarningFilled /></el-icon>
+        <div class="warning-text">
+          <p>此操作将删除所有已上传的 Excel 告警数据，包括：</p>
+          <ul>
+            <li>所有告警记录（{{ clearAllStats.alerts }} 条）</li>
+            <li>所有导入历史（{{ clearAllStats.imports }} 个文件）</li>
+            <li>所有导入明细（{{ clearAllStats.rows }} 行）</li>
+          </ul>
+          <p class="preserve-note">事件、IOC备注、设备标签不受影响，不会被删除。</p>
+          <p class="irreversible">删除后数据无法还原！</p>
+        </div>
+      </div>
+      <template #footer>
+        <div class="clear-all-footer">
+          <el-button @click="clearAllDialogVisible = false">取消</el-button>
+          <el-button type="danger" @click="handleClearAll(false)" :loading="clearAllLoading">
+            确认删除
+          </el-button>
+          <el-button type="warning" @click="handleClearAll(true)" :loading="clearAllLoading">
+            确认删除并备份
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { UploadFilled, Upload, Loading, Plus, Delete, ArrowUp, ArrowDown, QuestionFilled, Refresh, FolderOpened } from '@element-plus/icons-vue'
+import { UploadFilled, Upload, Loading, Plus, Delete, ArrowUp, ArrowDown, QuestionFilled, Refresh, FolderOpened, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  uploadExcel, fetchImports, fetchImport, fetchImportSheets, fetchImportRows, downloadImportRowsCsv, deleteImport, repairImportMetadata
+  uploadExcel, fetchImports, fetchImport, fetchImportSheets, fetchImportRows, downloadImportRowsCsv, deleteImport, repairImportMetadata, deleteAllImports
 } from '../api/imports'
 import {
   importTextFiles, fetchBatches, fetchBatch, deleteBatch, removeDevicesFromBatch,
@@ -892,11 +924,15 @@ async function loadImports() {
   }
 }
 
-function startImportPolling(id) {
+async function startImportPolling(id) {
   stopImportPolling()
+  // Track consecutive poll failures to detect backend disappearance
+  let consecutiveFailures = 0
+  const MAX_POLL_FAILURES = 10  // ~30 seconds of no response
   importPollTimer = setInterval(async () => {
     try {
       const detail = await fetchImport(id)
+      consecutiveFailures = 0  // reset on success
       if (detail.status !== 'queued' && detail.status !== 'processing' && detail.status !== 'uploaded') {
         processingImport.value = null
         stopImportPolling()
@@ -906,7 +942,12 @@ function startImportPolling(id) {
         processingImport.value = detail
       }
     } catch {
-      // 轮询失败不报错，继续尝试
+      consecutiveFailures++
+      if (consecutiveFailures >= MAX_POLL_FAILURES) {
+        processingImport.value = null
+        stopImportPolling()
+        ElMessage.error('后端长时间无响应，排队任务可能已中断。请检查后端服务是否正常运行，然后刷新页面。')
+      }
     }
   }, 3000)
 }
@@ -1682,6 +1723,59 @@ function openBackupsDir() {
   ElMessage.info('备份目录位于项目根目录的 backups/ 文件夹中。')
 }
 
+// ====== 清除全部上传数据 ======
+const clearAllDialogVisible = ref(false)
+const clearAllLoading = ref(false)
+const clearAllStats = ref({ alerts: 0, imports: 0, rows: 0 })
+
+async function showClearAllDialog() {
+  // Load stats before showing dialog
+  try {
+    const imports = await fetchImports()
+    const list = Array.isArray(imports) ? imports : (imports.items || [])
+    let totalAlerts = 0
+    let totalRows = 0
+    for (const item of list) {
+      totalAlerts += (item.rows_inserted || 0)
+      totalRows += (item.total_rows || 0)
+    }
+    clearAllStats.value = {
+      alerts: totalAlerts,
+      imports: list.length,
+      rows: totalRows,
+    }
+  } catch {
+    clearAllStats.value = { alerts: 0, imports: 0, rows: 0 }
+  }
+  clearAllDialogVisible.value = true
+}
+
+async function handleClearAll(backup) {
+  clearAllLoading.value = true
+  try {
+    const res = await deleteAllImports(backup)
+    if (res.ok) {
+      const d = res.deleted || {}
+      if (d.alerts === 0 && d.imports === 0) {
+        ElMessage.info(res.message || '没有数据可删除')
+      } else {
+        const msg = `已删除 ${d.alerts} 条告警、${d.imports} 个导入`
+        if (res.backup) {
+          ElMessage.success(msg + `，已备份到 ${res.backup}`)
+        } else {
+          ElMessage.success(msg)
+        }
+      }
+      clearAllDialogVisible.value = false
+      loadImports()
+    }
+  } catch (e) {
+    ElMessage.error('删除失败: ' + e.message)
+  } finally {
+    clearAllLoading.value = false
+  }
+}
+
 // 初始化
 onMounted(() => {
   loadImports()
@@ -2100,10 +2194,63 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .data-hint {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* Clear all dialog */
+.clear-all-warning {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-tertiary, #1a1a2a);
+  border-radius: 8px;
+  border: 1px solid var(--border-color, #2a2a3a);
+}
+
+.clear-all-warning .warning-icon {
+  font-size: 32px;
+  color: #F56C6C;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.clear-all-warning .warning-text {
+  flex: 1;
+}
+
+.clear-all-warning .warning-text p {
+  margin: 0 0 8px 0;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.clear-all-warning .warning-text ul {
+  margin: 0 0 8px 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.clear-all-warning .warning-text .irreversible {
+  color: #F56C6C;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.clear-all-warning .warning-text .preserve-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.clear-all-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

@@ -2,11 +2,13 @@
 """APT Mining Workbench - 一键升级脚本（正式侧）
 
 功能：
-1. 备份数据库
-2. 检测升级方式（离线 ZIP 包优先，回退 Git pull）
-3. 安装后端依赖
-4. 构建前端
-5. 版本确认
+1. 检测升级方式（离线 ZIP 包优先，回退 Git pull）
+2. 安装后端依赖
+3. 构建前端
+4. 版本确认
+
+可选参数：
+  --backup   升级前备份数据库（默认不备份）
 """
 
 import os
@@ -16,6 +18,7 @@ import zipfile
 import subprocess
 import glob
 import fnmatch
+import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -346,15 +349,23 @@ def fix_permissions():
 
 
 def main():
+    parser = argparse.ArgumentParser(description='APT Mining Workbench - 一键升级')
+    parser.add_argument('--backup', action='store_true', help='升级前备份数据库（默认不备份）')
+    args = parser.parse_args()
+
     print_header()
 
     old_ver = read_version()
     print(f"当前版本: {old_ver}")
 
-    # [1/5] 备份数据库
+    # [1/5] 备份数据库（可选）
     print()
-    print("[1/5] 备份数据库...")
-    backup_path = backup_database()
+    print(f"[1/5] 数据库备份: {'开启' if args.backup else '跳过'}")
+    backup_path = ""
+    if args.backup:
+        backup_path = backup_database()
+    else:
+        print("  如需备份，请使用 python upgrade.py --backup")
 
     # [2/5] 检测升级方式
     print("[2/5] 检测升级方式...")
