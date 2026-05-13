@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.4 - 2026-05-13
+
+- 新增：`start.py --daemon` 后台运行模式（Linux），脱离终端会话，SSH 断开不中断；日志输出到 `logs/backend.log`，PID 写入 `backend.pid`
+- 新增：`stop.py` 优先从 PID 文件停止后台进程，回退到端口扫描
+- 修复：Linux 默认绑定 `0.0.0.0`（Windows 仍为 `127.0.0.1`），解决外部无法访问
+- 修复：`upgrade.py` `check_git()` 使用 `command -v git`（Linux）替代 `where git`（Windows）
+- 修复：`upgrade.py` `install_backend_deps()` venv 路径跨平台兼容
+- 修复：`pack_release.py` vite build 命令移除 `--registry` 参数（vite 不识别）
+- 新增：`upgrade.py` 更新后自动 `chmod +x` 脚本文件（Linux/macOS）
+
 ## v3.2.0 - 2026-05-12
 
 - 新增：候选快照表系统（alert_candidate_snapshots + badge/tag 子表，active version 切换模型）
