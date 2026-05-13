@@ -103,10 +103,20 @@ def _get_npm_cmd():
 
 def install_frontend_deps():
     """Run npm install in the frontend directory."""
-    print("  Installing frontend dependencies...")
     frontend_dir = SCRIPT_DIR / "frontend"
+    dist_dir = frontend_dir / "dist" / "index.html"
+
+    # Release package already includes built frontend/dist/, skip npm install
+    if dist_dir.exists():
+        print("  Frontend dist already exists, skipping npm install.")
+        return
+
+    print("  Installing frontend dependencies...")
     npm_cmd = _get_npm_cmd()
-    result = subprocess.run(npm_cmd + ["install"], cwd=str(frontend_dir))
+    result = subprocess.run(
+        npm_cmd + ["install"],
+        cwd=str(frontend_dir),
+    )
     if result.returncode != 0:
         print("  [WARN] npmmirror 失败，回退到官方 npm...")
         result = subprocess.run(
@@ -120,8 +130,15 @@ def install_frontend_deps():
 
 def build_frontend():
     """Run npm run build in the frontend directory."""
-    print("  Building frontend...")
     frontend_dir = SCRIPT_DIR / "frontend"
+    dist_dir = frontend_dir / "dist" / "index.html"
+
+    # Release package already includes built frontend/dist/, skip build
+    if dist_dir.exists():
+        print("  Frontend dist already exists, skipping build.")
+        return
+
+    print("  Building frontend...")
     npm_cmd = _get_npm_cmd()
     result = subprocess.run(npm_cmd + ["run", "build"], cwd=str(frontend_dir))
     if result.returncode != 0:
