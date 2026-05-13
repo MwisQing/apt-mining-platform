@@ -65,6 +65,8 @@ def _ensure_runtime_schema(engine):
 
         for column_name in ("total_rows", "parsed_rows", "raw_rows"):
             _add_column_if_missing(connection, "imports", column_name, f"{column_name} INTEGER")
+        _add_column_if_missing(connection, "imports", "file_hash", "file_hash TEXT")
+        _add_column_if_missing(connection, "imports", "queue_position", "queue_position INTEGER")
 
         for column_name, ddl in {
             "import_id": "import_id INTEGER",

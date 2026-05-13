@@ -39,13 +39,18 @@
             <div v-if="processingImport" class="processing-status">
               <el-icon class="is-loading"><Loading /></el-icon>
               <span>正在解析：{{ processingImport.source_file }}</span>
-              <span v-if="processingImport.total_rows > 0" class="processing-detail">
+              <span v-if="processingImport.status === 'queued'" class="processing-detail">
+                （排队等待中{{ processingImport.queue_position ? `，第 ${processingImport.queue_position} 位` : '' }}）
+              </span>
+              <span v-else-if="processingImport.total_rows > 0" class="processing-detail">
                 （已处理 {{ processedCount }} / {{ processingImport.total_rows }} 行，{{ processingPercent }}%）
               </span>
               <span v-else class="processing-detail">
                 （正在读取文件，请稍候...）
               </span>
-              <el-tag type="primary" size="small" class="processing-tag">处理中</el-tag>
+              <el-tag :type="processingImport.status === 'queued' ? 'info' : 'primary'" size="small" class="processing-tag">
+                {{ processingImport.status === 'queued' ? '排队中' : '处理中' }}
+              </el-tag>
               <el-progress
                 v-if="processingImport.total_rows > 0"
                 :percentage="processingPercent"
@@ -80,6 +85,12 @@
             >
               <el-table-column prop="source_file" label="文件名" min-width="180" show-overflow-tooltip />
               <el-table-column prop="imported_at" label="导入时间" width="170" />
+              <el-table-column label="排队" width="60" align="center">
+                <template #default="{ row }">
+                  <span v-if="row.queue_position" class="queue-pos">{{ row.queue_position }}</span>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
               <el-table-column prop="total_rows" label="总行数" width="75" align="center" />
               <el-table-column prop="rows_inserted" label="成功" width="60" align="center" />
               <el-table-column prop="rows_skipped" label="跳过" width="60" align="center">
@@ -835,12 +846,12 @@ const uploadProgress = ref(0)
 const uploadingFileName = ref('')
 
 function statusLabel(status) {
-  const map = { success: '成功', partial: '部分成功', failed: '失败', processing: '处理中' }
+  const map = { success: '成功', partial: '部分成功', failed: '失败', processing: '处理中', queued: '排队中' }
   return map[status] || status || '-'
 }
 
 function statusTagType(status) {
-  const map = { success: 'success', partial: 'warning', failed: 'danger', processing: 'primary' }
+  const map = { success: 'success', partial: 'warning', failed: 'danger', processing: 'primary', queued: 'info' }
   return map[status] || 'info'
 }
 
@@ -865,8 +876,8 @@ async function loadImports() {
     const list = Array.isArray(res) ? res : (res.items || [])
     importsList.value = list
 
-    // 检查是否有正在处理的任务（processing 或 uploaded 都表示处理中）
-    const processing = list.find(i => i.status === 'processing' || i.status === 'uploaded')
+    // 检查是否有正在处理的任务（queued/processing/uploaded 都表示处理中）
+    const processing = list.find(i => i.status === 'queued' || i.status === 'processing' || i.status === 'uploaded')
     if (processing) {
       processingImport.value = processing
       startImportPolling(processing.id)
@@ -886,7 +897,7 @@ function startImportPolling(id) {
   importPollTimer = setInterval(async () => {
     try {
       const detail = await fetchImport(id)
-      if (detail.status !== 'processing' && detail.status !== 'uploaded') {
+      if (detail.status !== 'queued' && detail.status !== 'processing' && detail.status !== 'uploaded') {
         processingImport.value = null
         stopImportPolling()
         loadImports()
@@ -927,18 +938,32 @@ async function handleUploadExcel({ file }) {
     // 立即显示处理状态，不要等 loadImports 轮询才显示
     const jobs = result?.jobs || []
     if (jobs.length > 0) {
-      processingImport.value = {
-        source_file: jobs[0].source_file,
-        status: 'processing',
-        total_rows: 0,
-        rows_inserted: 0,
-        rows_skipped: 0,
-        rows_failed: 0,
-        raw_rows: 0,
+      const job = jobs[0]
+      if (job.duplicate) {
+        // 文件已经上传过，直接提示
+        ElMessage.info('该文件已上传过（' + job.source_file + '），已跳过重复导入。')
+        loadImports()
+      } else {
+        processingImport.value = {
+          source_file: job.source_file,
+          status: job.status || 'queued',
+          total_rows: 0,
+          rows_inserted: 0,
+          rows_skipped: 0,
+          rows_failed: 0,
+          raw_rows: 0,
+        }
+        if (job.status === 'queued') {
+          processingImport.value.queue_position = job.queue_position
+        }
+        startImportPolling(job.id)
+        if (job.status === 'queued') {
+          ElMessage.success('文件已接收，正在排队等待处理：' + file.name)
+        } else {
+          ElMessage.success('文件已接收，正在解析：' + file.name)
+        }
       }
-      startImportPolling(jobs[0].id)
     }
-    ElMessage.success('文件已接收，正在解析：' + file.name)
   } catch (e) {
     // 超时不代表失败——后端可能已经在处理了
     const isTimeout = e.message?.includes('timeout') || e.message?.includes('time')
@@ -952,7 +977,7 @@ async function handleUploadExcel({ file }) {
     // 上传进度条立即消失
     uploadProgress.value = 0
     uploadingFileName.value = ''
-    // 重新加载导入历史
+    // 重新加载导入历史（重复文件的情况也在这里显示）
     loadImports()
   }
 }
@@ -1830,6 +1855,17 @@ onBeforeUnmount(() => {
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+.queue-pos {
+  display: inline-block;
+  min-width: 20px;
+  padding: 2px 6px;
+  background: var(--bg-tertiary, #1a1a3a);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #9090a8);
 }
 
 .import-result {

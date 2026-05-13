@@ -1,11 +1,11 @@
-import api from './index'
+import api, { uploadApi } from './index'
 
 export function uploadExcel(files, onProgress) {
   const formData = new FormData()
   for (const file of files) {
     formData.append('files', file)
   }
-  return api.post('/api/imports', formData, {
+  return uploadApi.post('/api/imports', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: onProgress ? (e) => {
       if (e.lengthComputable) {

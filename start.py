@@ -19,6 +19,43 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 IS_WINDOWS = platform.system() == "Windows"
 
 
+def _daemonize(host: str, port: int, env: dict, log_file: Path):
+    """Fork into background (Linux only) and redirect output to log file."""
+    import time
+
+    pid_file = SCRIPT_DIR / "backend.pid"
+
+    # Method 1: try nohup via subprocess
+    venv_python = get_venv_python()
+    cmd = [
+        str(venv_python), "-m", "uvicorn",
+        "backend.main:app",
+        "--host", host, "--port", str(port),
+        "--timeout-keep-alive", "600",
+    ]
+
+    log_path = str(log_file)
+    with open(log_path, "a") as log_f:
+        log_f.write(f"\n=== [{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting (daemon) ===\n")
+        log_f.write(f"Command: {' '.join(cmd)}\n")
+        log_f.flush()
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(SCRIPT_DIR),
+            env=env,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,  # detach from terminal session
+        )
+
+    pid_file.write_text(str(proc.pid))
+    print(f"[Daemon] Backend started as PID {proc.pid}")
+    print(f"[Daemon] Log file: {log_path}")
+    print(f"[Daemon] Stop with: kill $(cat {pid_file}) or python stop.py")
+    sys.exit(0)
+
+
 def get_venv_python():
     """Return the path to the virtualenv Python executable."""
     if IS_WINDOWS:
@@ -107,6 +144,7 @@ def main():
     parser = argparse.ArgumentParser(description="Start APT Mining Workbench")
     parser.add_argument("--test", action="store_true", help="Run in test mode (port 9099, isolated DB)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
+    parser.add_argument("--daemon", action="store_true", help="Run in background (Linux only, survives SSH disconnect)")
     parser.add_argument("--host", type=str, default=None, help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Port number (default: 8088 or 9099 for test)")
     args = parser.parse_args()
@@ -162,6 +200,12 @@ def main():
 
     if auto_open:
         open_browser(host, port)
+
+    # Daemon mode: fork into background, survives SSH disconnect
+    if args.daemon and not IS_WINDOWS:
+        log_file = SCRIPT_DIR / "logs" / "backend.log"
+        os.makedirs(SCRIPT_DIR / "logs", exist_ok=True)
+        _daemonize(host, port, env, log_file)
 
     cmd = [
         str(venv_python), "-m", "uvicorn",

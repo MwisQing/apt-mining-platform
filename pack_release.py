@@ -76,13 +76,15 @@ def build_frontend() -> bool:
     # 确保依赖已安装
     if not node_modules.exists():
         print("  node_modules 不存在，先执行 npm install...")
-        result = subprocess.run("npm install", shell=True, cwd=frontend_dir)
+        result = subprocess.run(
+            "npm install --registry=https://registry.npmmirror.com",
+            shell=True, cwd=frontend_dir,
+        )
         if result.returncode != 0:
             print("  npm install 失败！")
             return False
 
     print("  正在构建前端...")
-    # 使用 npx 确保从 node_modules/.bin 解析 vite
     result = subprocess.run(
         "npx vite build",
         shell=True,

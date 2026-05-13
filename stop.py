@@ -15,6 +15,48 @@ import sys
 from pathlib import Path
 
 IS_WINDOWS = platform.system() == "Windows"
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def kill_pid_file():
+    """Kill process by PID file (daemon mode)."""
+    pid_file = SCRIPT_DIR / "backend.pid"
+    if not pid_file.exists():
+        return False
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return False
+
+    if IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True, text=True,
+            )
+            if str(pid) in result.stdout:
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+                print(f"  Killed daemon PID={pid} (from PID file)")
+                pid_file.unlink(missing_ok=True)
+                return True
+        except Exception:
+            pass
+    else:
+        try:
+            os.kill(pid, 0)  # check if alive
+            os.kill(pid, 9)
+            print(f"  Killed daemon PID={pid} (from PID file)")
+            pid_file.unlink(missing_ok=True)
+            return True
+        except ProcessLookupError:
+            print(f"  Daemon PID={pid} already exited.")
+            pid_file.unlink(missing_ok=True)
+            return True
+        except PermissionError:
+            print(f"  Permission denied for daemon PID={pid}. Try sudo.")
+            return False
+    return False
 
 
 def port_in_use(host: str, port: int) -> bool:
@@ -112,6 +154,11 @@ def main():
     print("======================================")
     print("APT Mining Workbench - Stop Service")
     print("======================================")
+
+    # Try PID file first (daemon mode)
+    if not args.port and not args.test:
+        if kill_pid_file():
+            return
 
     ports_to_check = []
     if args.all:

@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import threading
+import queue
 import pandas as pd
 import json
 import csv
@@ -23,7 +24,11 @@ router = APIRouter(prefix="/api/imports", tags=["imports"])
 IMPORT_PROGRESS_BATCH_SIZE = 100  # update progress every N rows during sheet parsing
 DB_LOCK_RETRY_ATTEMPTS = 12
 DB_LOCK_RETRY_DELAY_SECONDS = 1
-IMPORT_JOB_LOCK = threading.Lock()
+
+# Import queue: files are queued and processed one at a time
+_import_queue = queue.Queue()
+_queue_worker_started = False
+
 ROW_STATUS_GROUPS = {
     "issues": ("raw_only", "failed"),
     "skipped": ("skipped_duplicate",),
@@ -718,60 +723,82 @@ def _process_excel(file_path: str, source_file: str, import_id: int, db) -> dict
 
 
 def _run_import_job(import_id: int, file_path: str, source_file: str):
-    with IMPORT_JOB_LOCK:
-        db = get_session_local()()
+    db = get_session_local()()
+    try:
+        _update_import(db, import_id, status="processing", queue_position=None)
+        db.commit()
+
+        result = _process_excel(file_path, source_file, import_id, db)
+        status = "success"
+        if result["failed"] > 0 or result["raw_only"] > 0:
+            status = "partial" if (result["inserted"] or result["skipped"] or result["raw_only"]) else "failed"
+
+        _update_import(
+            db,
+            import_id,
+            rows_inserted=result["inserted"],
+            rows_skipped=result["skipped"],
+            rows_failed=result["failed"],
+            total_rows=result["total_rows"],
+            parsed_rows=result["parsed_rows"],
+            raw_rows=result["raw_only"],
+            status=status,
+            log=json.dumps(result["failures"], ensure_ascii=False),
+        )
+        write_audit(db, "import_excel", "import", import_id, {
+            "source_file": source_file,
+            "inserted": result["inserted"],
+            "skipped": result["skipped"],
+            "raw_only": result["raw_only"],
+            "failed": result["failed"],
+            "total_rows": result["total_rows"],
+        })
+        db.commit()
+        if status in {"success", "partial"}:
+            rebuild_candidate_snapshots(db)
+    except Exception as e:
+        _update_import(
+            db,
+            import_id,
+            rows_inserted=0,
+            rows_skipped=0,
+            rows_failed=1,
+            total_rows=0,
+            parsed_rows=0,
+            raw_rows=0,
+            status="failed",
+            log=json.dumps([{"row": None, "error": str(e)}], ensure_ascii=False),
+        )
+        write_audit(db, "import_excel_failed", "import", import_id, {
+            "source_file": source_file,
+            "error": str(e),
+        })
+        db.commit()
+    finally:
+        db.close()
+
+
+def _import_queue_worker():
+    """Background worker: processes import queue one file at a time."""
+    while True:
         try:
-            _update_import(db, import_id, status="processing")
-            db.commit()
+            import_id, file_path, source_file = _import_queue.get()
+            if import_id is None:
+                break  # sentinel to stop worker
+            _run_import_job(import_id, file_path, source_file)
+            _import_queue.task_done()
+        except Exception:
+            # Don't crash the worker on any error
+            _import_queue.task_done()
 
-            result = _process_excel(file_path, source_file, import_id, db)
-            status = "success"
-            if result["failed"] > 0 or result["raw_only"] > 0:
-                status = "partial" if (result["inserted"] or result["skipped"] or result["raw_only"]) else "failed"
 
-            _update_import(
-                db,
-                import_id,
-                rows_inserted=result["inserted"],
-                rows_skipped=result["skipped"],
-                rows_failed=result["failed"],
-                total_rows=result["total_rows"],
-                parsed_rows=result["parsed_rows"],
-                raw_rows=result["raw_only"],
-                status=status,
-                log=json.dumps(result["failures"], ensure_ascii=False),
-            )
-            write_audit(db, "import_excel", "import", import_id, {
-                "source_file": source_file,
-                "inserted": result["inserted"],
-                "skipped": result["skipped"],
-                "raw_only": result["raw_only"],
-                "failed": result["failed"],
-                "total_rows": result["total_rows"],
-            })
-            db.commit()
-            if status in {"success", "partial"}:
-                rebuild_candidate_snapshots(db)
-        except Exception as e:
-            _update_import(
-                db,
-                import_id,
-                rows_inserted=0,
-                rows_skipped=0,
-                rows_failed=1,
-                total_rows=0,
-                parsed_rows=0,
-                raw_rows=0,
-                status="failed",
-                log=json.dumps([{"row": None, "error": str(e)}], ensure_ascii=False),
-            )
-            write_audit(db, "import_excel_failed", "import", import_id, {
-                "source_file": source_file,
-                "error": str(e),
-            })
-            db.commit()
-        finally:
-            db.close()
+def _ensure_queue_worker():
+    """Start the background queue worker thread if not already running."""
+    global _queue_worker_started
+    if not _queue_worker_started:
+        _queue_worker_started = True
+        t = threading.Thread(target=_import_queue_worker, daemon=True, name="import-queue-worker")
+        t.start()
 
 
 def _repair_import_rows_if_needed(db, import_id):
@@ -805,24 +832,47 @@ def _repair_import_rows_if_needed(db, import_id):
     db.commit()
 
 
-async def _save_upload_file(file: UploadFile, file_path: str):
+async def _save_upload_file(file: UploadFile, file_path: str) -> str:
+    """Save uploaded file to disk while computing SHA256 hash. Returns the hex digest."""
+    h = hashlib.sha256()
     with open(file_path, "wb") as handle:
         while True:
             chunk = await file.read(1024 * 1024)
             if not chunk:
                 break
+            h.update(chunk)
             handle.write(chunk)
     await file.close()
+    return h.hexdigest()
 
 
 def _start_import_thread(import_id: int, file_path: str, source_file: str):
-    thread = threading.Thread(
-        target=_run_import_job,
-        args=(import_id, file_path, source_file),
-        daemon=True,
-        name=f"import-{import_id}",
-    )
-    thread.start()
+    """Enqueue an import job into the queue for sequential processing."""
+    _ensure_queue_worker()
+    _import_queue.put((import_id, file_path, source_file))
+    # Update queue position for all queued imports
+    _update_queue_positions()
+
+
+def _update_queue_positions():
+    """Update queue_position field for all queued imports."""
+    try:
+        db = get_session_local()()
+        position = 1
+        for item in list(_import_queue.queue):
+            if item[0] is not None:  # skip sentinel
+                db.execute(text(
+                    "UPDATE imports SET queue_position = :pos WHERE id = :id AND status = 'queued'"
+                ), {"pos": position, "id": item[0]})
+                position += 1
+        db.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 @router.post("")
@@ -835,6 +885,33 @@ async def import_excel(files: list[UploadFile] = File(...), db=Depends(get_db)):
     for file in files:
         filename = os.path.basename(file.filename)
         now = datetime.now().isoformat()
+
+        # Step 1: Save file and compute SHA256 hash
+        stored_name = f"import_tmp_{filename}"
+        file_path = os.path.join(upload_dir, stored_name)
+        file_hash = await _save_upload_file(file, file_path)
+
+        # Step 2: Check if same file was already imported (by file hash)
+        session_db = session_local()
+        try:
+            existing = session_db.execute(text(
+                "SELECT id, source_file, status FROM imports WHERE file_hash = :hash ORDER BY imported_at DESC LIMIT 1"
+            ), {"hash": file_hash}).fetchone()
+
+            if existing:
+                # File already uploaded — skip re-import, return existing record
+                os.remove(file_path)  # no need to keep the duplicate file
+                jobs.append({
+                    "id": existing[0],
+                    "source_file": existing[1],
+                    "status": existing[2],
+                    "duplicate": True,
+                })
+                continue
+        finally:
+            session_db.close()
+
+        # Step 3: Create import record with file_hash, status=queued
         holder = {}
         record_db = session_local()
 
@@ -842,9 +919,9 @@ async def import_excel(files: list[UploadFile] = File(...), db=Depends(get_db)):
             cursor = record_db.execute(text(
                 "INSERT INTO imports ("
                 "source_file, imported_at, rows_inserted, rows_skipped, rows_failed, "
-                "total_rows, parsed_rows, raw_rows, status, log"
-                ") VALUES (:source_file, :imported_at, 0, 0, 0, 0, 0, 0, 'uploaded', '[]')"
-            ), {"source_file": filename, "imported_at": now})
+                "total_rows, parsed_rows, raw_rows, status, log, file_hash"
+                ") VALUES (:source_file, :imported_at, 0, 0, 0, 0, 0, 0, 'queued', '[]', :file_hash)"
+            ), {"source_file": filename, "imported_at": now, "file_hash": file_hash})
             holder["import_id"] = cursor.lastrowid
             write_audit(record_db, "upload_import_file", "import", holder["import_id"], {"source_file": filename})
             record_db.commit()
@@ -853,13 +930,16 @@ async def import_excel(files: list[UploadFile] = File(...), db=Depends(get_db)):
             _run_locked_retry(record_db, _create_import_record)
         finally:
             record_db.close()
-        import_id = holder["import_id"]
-        stored_name = f"import_{import_id}_{filename}"
-        file_path = os.path.join(upload_dir, stored_name)
-        await _save_upload_file(file, file_path)
 
-        _start_import_thread(import_id, file_path, filename)
-        jobs.append({"id": import_id, "source_file": filename, "status": "uploaded"})
+        import_id = holder["import_id"]
+        # Rename the temp file to match the import_id
+        final_name = f"import_{import_id}_{filename}"
+        final_path = os.path.join(upload_dir, final_name)
+        os.rename(file_path, final_path)
+
+        # Step 4: Enqueue for sequential processing
+        _start_import_thread(import_id, final_path, filename)
+        jobs.append({"id": import_id, "source_file": filename, "status": "queued"})
 
     return {"accepted": len(jobs), "jobs": jobs}
 
@@ -870,6 +950,8 @@ def _import_item(row):
         d["imported_at"] = str(d["imported_at"])
     for field in ("rows_inserted", "rows_skipped", "rows_failed", "total_rows", "parsed_rows", "raw_rows"):
         d[field] = d.get(field) or 0
+    if d.get("queue_position") is not None:
+        d["queue_position"] = int(d["queue_position"])
     d["scope"] = {
         "imports_all_sheets": True,
         "imports_original_rows": True,
