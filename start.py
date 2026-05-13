@@ -145,20 +145,23 @@ def main():
     parser.add_argument("--test", action="store_true", help="Run in test mode (port 9099, isolated DB)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
     parser.add_argument("--daemon", action="store_true", help="Run in background (Linux only, survives SSH disconnect)")
-    parser.add_argument("--host", type=str, default=None, help="Bind address (default: 127.0.0.1)")
+    parser.add_argument("--host", type=str, default=None, help="Bind address (default: 0.0.0.0 on Linux, 127.0.0.1 on Windows)")
     parser.add_argument("--port", type=int, default=None, help="Port number (default: 8088 or 9099 for test)")
     args = parser.parse_args()
+
+    # Platform-aware default host: 0.0.0.0 on Linux, 127.0.0.1 on Windows
+    default_host = "0.0.0.0" if not IS_WINDOWS else "127.0.0.1"
 
     venv_python = ensure_runtime_ready()
 
     # Determine mode
     if args.test:
-        host = args.host or os.environ.get("APT_SERVER_HOST", "127.0.0.1")
+        host = args.host or os.environ.get("APT_SERVER_HOST", default_host)
         port = args.port or int(os.environ.get("APT_SERVER_PORT", "9099"))
         db_path = os.environ.get("APT_DB_PATH", "./data/workbench-test.db")
         upload_tmp = os.environ.get("APT_UPLOAD_TMP", "./uploads-test")
     else:
-        host = args.host or os.environ.get("APT_SERVER_HOST", "127.0.0.1")
+        host = args.host or os.environ.get("APT_SERVER_HOST", default_host)
         port = args.port or int(os.environ.get("APT_SERVER_PORT", "8088"))
         db_path = os.environ.get("APT_DB_PATH", "./data/workbench.db")
         upload_tmp = os.environ.get("APT_UPLOAD_TMP", "./uploads")
