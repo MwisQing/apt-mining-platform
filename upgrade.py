@@ -251,7 +251,15 @@ def install_backend_deps() -> bool:
 
 def build_frontend() -> bool:
     """构建前端"""
-    frontend_pkg = SCRIPT_DIR / "frontend" / "package.json"
+    frontend_dir = SCRIPT_DIR / "frontend"
+    frontend_pkg = frontend_dir / "package.json"
+    dist_file = frontend_dir / "dist" / "index.html"
+
+    # Release package already includes built frontend/dist/, skip build
+    if dist_file.exists():
+        print("  前端构建产物已存在，跳过 npm install + build。")
+        return True
+
     if not frontend_pkg.exists():
         print("  frontend/package.json 不存在，跳过前端构建。")
         return True
@@ -260,13 +268,13 @@ def build_frontend() -> bool:
     result = subprocess.run(
         "npm install --silent",
         shell=True,
-        cwd=SCRIPT_DIR / "frontend",
+        cwd=str(frontend_dir),
         capture_output=True,
     )
     result = subprocess.run(
         "npm run build",
         shell=True,
-        cwd=SCRIPT_DIR / "frontend",
+        cwd=str(frontend_dir),
     )
     if result.returncode != 0:
         print("  警告: 前端构建失败，请手动处理。")
