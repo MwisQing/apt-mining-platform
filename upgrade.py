@@ -33,6 +33,9 @@ EXCLUDE_DIRS = {
 EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
 
 
+IS_LINUX = os.name != "nt"
+
+
 def print_header():
     print("=" * 40)
     print("APT Mining Workbench - 一键升级")
@@ -222,12 +225,16 @@ def upgrade_from_git() -> bool:
 
 def install_backend_deps() -> bool:
     """安装后端依赖"""
-    activate = SCRIPT_DIR / "venv" / "Scripts" / "activate.bat"
-    if not activate.exists():
-        print("  venv 不存在，请先执行 install.bat。")
+    if os.name == "nt":
+        activate = SCRIPT_DIR / "venv" / "Scripts" / "activate.bat"
+        venv_python = SCRIPT_DIR / "venv" / "Scripts" / "python.exe"
+    else:
+        venv_python = SCRIPT_DIR / "venv" / "bin" / "python3"
+
+    if not venv_python.exists():
+        print("  venv 不存在，请先执行 install.sh 或 install.py。")
         return False
 
-    venv_python = SCRIPT_DIR / "venv" / "Scripts" / "python.exe"
     requirements = SCRIPT_DIR / "requirements.txt"
 
     print("  正在安装后端依赖...")
@@ -269,7 +276,8 @@ def build_frontend() -> bool:
 
 
 def check_git() -> bool:
-    result = run("where git", capture=True)
+    cmd = "where git" if os.name == "nt" else "command -v git"
+    result = run(cmd, capture=True)
     return result.returncode == 0
 
 
@@ -307,6 +315,21 @@ def init_git_if_needed() -> bool:
         print("  git init 失败！")
         return False
     print("  git 仓库已初始化。")
+    return True
+
+
+def fix_permissions():
+    """On Linux/macOS, ensure .py scripts are executable after code update."""
+    if os.name == "nt":
+        return True  # Windows doesn't need chmod
+    scripts = ["start.py", "stop.py", "install.py", "upgrade.py", "pack_release.py", "push_release.py"]
+    for name in scripts:
+        p = SCRIPT_DIR / name
+        if p.exists():
+            try:
+                os.chmod(p, p.stat().st_mode | 0o755)
+            except Exception:
+                pass
     return True
 
 
@@ -355,12 +378,16 @@ def main():
             input("按任意键继续...")
             sys.exit(1)
 
-    # [3/5] 安装后端依赖
-    print("[3/5] 安装后端依赖...")
+    # [3/5] 修复脚本执行权限（Linux/macOS）
+    print("[3/5] 修复脚本执行权限...")
+    fix_permissions()
+
+    # [4/5] 安装后端依赖
+    print("[4/5] 安装后端依赖...")
     install_backend_deps()
 
-    # [4/5] 构建前端
-    print("[4/5] 构建前端...")
+    # [5/5] 构建前端
+    print("[5/5] 构建前端...")
     build_frontend()
 
     # [5/5] 版本确认
