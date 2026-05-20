@@ -1,0 +1,15 @@
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+.env
+logs/*.log
+uploads/*
+!uploads/.gitkeep
+static/*
+!static/.gitkeep
+data/
+vendor/

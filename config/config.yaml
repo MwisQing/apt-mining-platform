@@ -1,0 +1,32 @@
+paths:
+  db: ./data/workbench.db
+  upload_tmp: ./uploads
+  dict_apt: ./config/apt_org_dict.yaml
+  dict_crime: ./config/advanced_crime.yaml
+  dict_noise: ./config/noise_family.yaml
+rules:
+  trace_ttl_days: 30
+  default_hide_traced: false
+  default_hide_closed_events: false
+persistence:
+  min_days_for_cross_day_badge: 2
+  strong_days: 5
+badges:
+  enabled:
+  - apt_dict
+  - advanced_crime
+  - noise_family
+  - multi_vendor
+  - cross_day
+  - lateral
+  - expired_revive
+  - high_tier
+  - scan_noise
+  thresholds:
+    multi_vendor_min: 3
+    lateral_min_targets: 3
+    scan_noise_count: 1000
+server:
+  host: 127.0.0.1
+  port: 8088
+  auto_open_browser: true
