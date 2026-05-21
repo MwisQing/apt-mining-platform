@@ -3,9 +3,10 @@
 
 功能：
 1. 检测升级方式（离线 ZIP 包优先，回退 Git pull）
-2. 安装后端依赖
-3. 构建前端
-4. 版本确认
+2. 下载 Go 模块依赖
+3. 编译 Go 后端
+4. 构建前端
+5. 版本确认
 
 可选参数：
   --backup   升级前备份数据库（默认不备份）
@@ -64,22 +65,30 @@ def read_version() -> str:
 
 
 def backup_database() -> str:
-    """备份数据库，返回备份路径"""
-    db_path = SCRIPT_DIR / "data" / "workbench.db"
-    if not db_path.exists():
-        print("  数据库不存在，跳过备份。")
-        return ""
-
+    """备份 PostgreSQL 数据库，返回备份路径"""
     backups_dir = SCRIPT_DIR / "backups"
     backups_dir.mkdir(exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = backups_dir / f"workbench_{timestamp}.db"
+    backup_path = backups_dir / f"apt_mining_prod_{timestamp}.sql"
+
+    pg_dump = r"C:\Program Files\PostgreSQL\18\bin\pg_dump.exe" if os.name == "nt" else "pg_dump"
+    env = os.environ.copy()
+    env["PGPASSWORD"] = "AptProd2026mining"
 
     try:
-        shutil.copy2(db_path, backup_path)
-        print(f"  已备份: {backup_path}")
-        return str(backup_path)
+        result = subprocess.run(
+            [pg_dump, "-h", "127.0.0.1", "-U", "apt_prod",
+             "-d", "apt_mining_prod", "-f", str(backup_path)],
+            env=env, capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            size = os.path.getsize(backup_path) / 1024
+            print(f"  已备份: {backup_path} ({size:.0f} KB)")
+            return str(backup_path)
+        else:
+            print(f"  警告: 数据库备份失败！({result.stderr.strip()})")
+            return ""
     except Exception as e:
         print(f"  警告: 数据库备份失败！({e})")
         return ""
@@ -227,27 +236,20 @@ def upgrade_from_git() -> bool:
 
 
 def install_backend_deps() -> bool:
-    """安装后端依赖"""
-    if os.name == "nt":
-        activate = SCRIPT_DIR / "venv" / "Scripts" / "activate.bat"
-        venv_python = SCRIPT_DIR / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = SCRIPT_DIR / "venv" / "bin" / "python3"
+    """安装 Go 后端依赖（go mod download）"""
+    go_dir = SCRIPT_DIR / "backend_v2"
+    if not (go_dir / "go.mod").exists():
+        print("  backend_v2/go.mod 不存在，跳过依赖安装。")
+        return True
 
-    if not venv_python.exists():
-        print("  venv 不存在，请先执行 install.sh 或 install.py。")
-        return False
-
-    requirements = SCRIPT_DIR / "requirements.txt"
-
-    print("  正在安装后端依赖...")
+    print("  正在下载 Go 依赖...")
     result = subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(requirements), "-q"],
-        cwd=SCRIPT_DIR,
+        ["go", "mod", "download"],
+        cwd=str(go_dir), capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print("  警告: 后端依赖安装失败，请手动处理。")
-        return False
+        print(f"  [WARN] go mod download: {result.stderr.strip()}")
+        return True  # 不阻断升级
     print("  完成")
     return True
 

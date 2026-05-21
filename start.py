@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Cross-platform start script for APT Mining Workbench.
+"""Cross-platform start script for APT Mining Workbench v4.0 (Go backend).
 
 Usage:
-    python start.py [--test] [--go]
+    python start.py [--test]
 
-Supports Windows and Linux. Detects platform for venv path, port check,
-and browser auto-open. In test mode, uses isolated port/DB/uploads.
-
-With --go flag, launches Go backend instead of Python uvicorn.
+Supports Windows and Linux. Detects platform for port check and browser auto-open.
+In test mode, uses isolated port/DB/uploads.
 """
 import argparse
 import os
@@ -19,62 +17,6 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 IS_WINDOWS = platform.system() == "Windows"
-
-
-def _daemonize(host: str, port: int, env: dict, log_file: Path):
-    """Fork into background (Linux only) and redirect output to log file."""
-    import time
-
-    pid_file = SCRIPT_DIR / "backend.pid"
-
-    # Method 1: try nohup via subprocess
-    venv_python = get_venv_python()
-    cmd = [
-        str(venv_python), "-m", "uvicorn",
-        "backend.main:app",
-        "--host", host, "--port", str(port),
-        "--timeout-keep-alive", "600",
-    ]
-
-    log_path = str(log_file)
-    with open(log_path, "a") as log_f:
-        log_f.write(f"\n=== [{time.strftime('%Y-%m-%d %H:%M:%S')}] Starting (daemon) ===\n")
-        log_f.write(f"Command: {' '.join(cmd)}\n")
-        log_f.flush()
-
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(SCRIPT_DIR),
-            env=env,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,  # detach from terminal session
-        )
-
-    pid_file.write_text(str(proc.pid))
-    print(f"[Daemon] Backend started as PID {proc.pid}")
-    print(f"[Daemon] Log file: {log_path}")
-    print(f"[Daemon] Stop with: kill $(cat {pid_file}) or python stop.py")
-    sys.exit(0)
-
-
-def get_venv_python():
-    """Return the path to the virtualenv Python executable."""
-    if IS_WINDOWS:
-        return SCRIPT_DIR / "venv" / "Scripts" / "python.exe"
-    return SCRIPT_DIR / "venv" / "bin" / "python3"
-
-
-def ensure_runtime_ready():
-    venv_python = get_venv_python()
-    if not venv_python.exists():
-        installer = "install.bat" if IS_WINDOWS else "./install.sh"
-        print(f"[ERROR] Virtual env not found. Please run {installer} first.")
-        sys.exit(1)
-    if not (SCRIPT_DIR / "frontend" / "dist" / "index.html").exists():
-        print("[ERROR] frontend/dist/index.html not found. The runtime package is incomplete.")
-        sys.exit(1)
-    return venv_python
 
 
 def port_in_use(host: str, port: int) -> bool:
@@ -104,7 +46,6 @@ def kill_existing_on_port(host: str, port: int):
         except Exception:
             pass
     else:
-        # Linux: try lsof, then fuser as fallback
         try:
             result = subprocess.run(
                 ["lsof", "-ti", f"tcp:{port}"],
@@ -135,95 +76,50 @@ def open_browser(host: str, port: int):
         webbrowser.open(f"http://{host}:{port}")
     except Exception:
         if not IS_WINDOWS:
-            # Linux fallback: xdg-open
             try:
                 subprocess.Popen(["xdg-open", f"http://{host}:{port}"])
             except Exception:
                 pass
 
 
-def load_env_file(path):
-    """Load .env file into os.environ (simple key=value parser, no dependencies)."""
-    if not path.exists():
-        return
-    with open(path, encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' in line:
-                key, _, value = line.partition('=')
-                key = key.strip()
-                value = value.strip()
-                if key and value:
-                    os.environ.setdefault(key, value)
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Start APT Mining Workbench")
+    parser = argparse.ArgumentParser(description="Start APT Mining Workbench v4.0 (Go)")
     parser.add_argument("--test", action="store_true", help="Run in test mode (port 9099, isolated DB)")
-    parser.add_argument("--go", action="store_true", help="Launch Go backend instead of Python uvicorn")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
-    parser.add_argument("--daemon", action="store_true", help="Run in background (Linux only, survives SSH disconnect)")
-    parser.add_argument("--host", type=str, default=None, help="Bind address (default: 0.0.0.0 on Linux, 127.0.0.1 on Windows)")
+    parser.add_argument("--host", type=str, default=None, help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Port number (default: 8088 or 9099 for test)")
     args = parser.parse_args()
 
-    # Load .env file if present (must be before environment setup)
-    load_env_file(SCRIPT_DIR / ".env")
+    default_host = "127.0.0.1"
+    host = args.host or default_host
+    port = args.port or (9099 if args.test else 8088)
 
-    # Platform-aware default host: 0.0.0.0 on Linux, 127.0.0.1 on Windows
-    default_host = "0.0.0.0" if not IS_WINDOWS else "127.0.0.1"
-
-    venv_python = ensure_runtime_ready()
-
-    # Determine mode
-    if args.test:
-        host = args.host or os.environ.get("APT_SERVER_HOST", default_host)
-        port = args.port or int(os.environ.get("APT_SERVER_PORT", "9099"))
-        db_path = os.environ.get("APT_DB_PATH", "./data/workbench-test.db")
-        upload_tmp = os.environ.get("APT_UPLOAD_TMP", "./uploads-test")
-    else:
-        host = args.host or os.environ.get("APT_SERVER_HOST", default_host)
-        port = args.port or int(os.environ.get("APT_SERVER_PORT", "8088"))
-        db_path = os.environ.get("APT_DB_PATH", "./data/workbench.db")
-        upload_tmp = os.environ.get("APT_UPLOAD_TMP", "./uploads")
+    # Load .env file if present
+    env_file = SCRIPT_DIR / ".env"
+    if env_file.exists():
+        with open(env_file, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, _, value = line.partition('=')
+                    key = key.strip()
+                    value = value.strip()
+                    if key and value:
+                        os.environ.setdefault(key, value)
 
     auto_open = not args.no_browser and os.environ.get("APT_AUTO_OPEN_BROWSER", "1").lower() not in {"0", "false", "no"}
 
-    # Ensure directories exist
-    os.makedirs(SCRIPT_DIR / "data", exist_ok=True)
-    if upload_tmp:
-        os.makedirs(SCRIPT_DIR / upload_tmp, exist_ok=True)
-
-    # Build environment
-    env = os.environ.copy()
-    env["APT_SERVER_HOST"] = host
-    env["APT_SERVER_PORT"] = str(port)
-    env["APT_DB_PATH"] = db_path
-    env["APT_UPLOAD_TMP"] = upload_tmp
-    env["PYTHONPATH"] = str(SCRIPT_DIR)
-    if args.test:
-        env["VITE_API_TARGET"] = f"http://{host}:{port}"
-    else:
-        env.setdefault("VITE_API_TARGET", f"http://{host}:{port}")
-
-    # Database isolation: prod and test use separate users with different passwords
-    if args.test:
-        env.setdefault("APT_DB_USER", os.environ.get("APT_DB_USER_TEST", "apt_test"))
-        env.setdefault("APT_DB_PASSWORD", os.environ.get("APT_DB_PASSWORD_TEST", ""))
-    else:
-        env.setdefault("APT_DB_USER", os.environ.get("APT_DB_USER_PROD", "apt_prod"))
-        env.setdefault("APT_DB_PASSWORD", os.environ.get("APT_DB_PASSWORD_PROD", ""))
-
     mode_label = "Test Mode" if args.test else "Starting"
     print("======================================")
-    print(f"APT Mining Workbench - {mode_label}")
+    print(f"APT Mining Workbench v4.0 - {mode_label}")
     print("======================================")
     print(f"Backend: http://{host}:{port}")
     if args.test:
-        print(f"Test DB: {db_path}")
-        print(f"Test Uploads: {upload_tmp}")
+        print(f"DB: apt_mining_test")
+    else:
+        print(f"DB: apt_mining_prod")
 
     if port_in_use(host, port):
         print(f"Port {port} is in use. Attempting to free it...")
@@ -237,59 +133,38 @@ def main():
     if auto_open:
         open_browser(host, port)
 
-    # Daemon mode: fork into background, survives SSH disconnect
-    if args.daemon and not IS_WINDOWS:
-        log_file = SCRIPT_DIR / "logs" / "backend.log"
-        os.makedirs(SCRIPT_DIR / "logs", exist_ok=True)
-        _daemonize(host, port, env, log_file)
-
-    if args.go:
-        # Launch Go backend
-        go_dir = SCRIPT_DIR / "backend_v2"
-        go_exe = go_dir / ("apt-mining.exe" if IS_WINDOWS else "apt-mining")
-        if not go_exe.exists():
-            print("Building Go backend...")
-            result = subprocess.run(
-                ["go", "build", "-o", str(go_exe), "."],
-                cwd=str(go_dir), env=env, capture_output=True, text=True,
-            )
-            if result.returncode != 0:
-                print(f"[ERROR] Go build failed:\n{result.stderr}")
-                sys.exit(1)
-            print("Go build complete.")
-
-        # Go backend: pass explicit DB connection settings for prod/test isolation
-        env["APT_DB_NAME"] = os.environ.get(
-            "APT_DB_NAME_TEST" if args.test else "APT_DB_NAME_PROD",
-            "apt_mining_test" if args.test else "apt_mining_prod"
+    # Launch Go backend
+    go_dir = SCRIPT_DIR / "backend_v2"
+    go_exe = go_dir / ("apt-mining.exe" if IS_WINDOWS else "apt-mining")
+    if not go_exe.exists():
+        print("Go binary not found. Building...")
+        result = subprocess.run(
+            ["go", "build", "-o", str(go_exe), "."],
+            cwd=str(go_dir), capture_output=True, text=True,
         )
-        env["APT_DB_HOST"] = os.environ.get(
-            "APT_DB_HOST_TEST" if args.test else "APT_DB_HOST_PROD",
-            "127.0.0.1"
-        )
-        env["APT_DB_PORT"] = os.environ.get(
-            "APT_DB_PORT_TEST" if args.test else "APT_DB_PORT_PROD",
-            "5432"
-        )
-        # Upload directory isolation: Go backend reads this env var
-        env["APT_UPLOAD_TMP"] = upload_tmp
+        if result.returncode != 0:
+            print(f"[ERROR] Go build failed:\n{result.stderr}")
+            sys.exit(1)
+        print("Go build complete.")
 
-        cmd = [str(go_exe)]
-        print(f"Launching Go backend: {go_exe}")
-        print()
-        completed = subprocess.run(cmd, cwd=str(SCRIPT_DIR), env=env)
-        sys.exit(completed.returncode)
-    else:
-        cmd = [
-            str(venv_python), "-m", "uvicorn",
-            "backend.main:app",
-            "--host", host, "--port", str(port),
-            "--timeout-keep-alive", "600",
-        ]
-        print(f"Launching uvicorn: {' '.join(cmd)}")
-        print()
-        completed = subprocess.run(cmd, cwd=SCRIPT_DIR, env=env)
-        sys.exit(completed.returncode)
+    # Set environment for Go backend
+    env = os.environ.copy()
+    env["APT_SERVER_HOST"] = host
+    env["APT_SERVER_PORT"] = str(port)
+    env["APT_DB_NAME"] = "apt_mining_test" if args.test else "apt_mining_prod"
+    env["APT_DB_HOST"] = "127.0.0.1"
+    env["APT_DB_PORT"] = "5432"
+    env["APT_DB_USER"] = "apt_test" if args.test else "apt_prod"
+    env["APT_DB_PASSWORD"] = "AptTest2026mining" if args.test else "AptProd2026mining"
+    env["APT_UPLOAD_TMP"] = str(SCRIPT_DIR / ("uploads-test" if args.test else "uploads"))
+
+    os.makedirs(env["APT_UPLOAD_TMP"], exist_ok=True)
+
+    cmd = [str(go_exe)]
+    print(f"Launching: {go_exe}")
+    print()
+    completed = subprocess.run(cmd, cwd=str(go_dir), env=env)
+    sys.exit(completed.returncode)
 
 
 if __name__ == "__main__":

@@ -2,11 +2,9 @@
 chcp 65001 > nul
 setlocal enabledelayedexpansion
 
-echo ======================================
-echo APT Mining Workbench - Go Backend
-echo ======================================
-echo Port: 8088
-echo DB: apt_mining_prod
+echo ============================================
+echo APT Mining v4.0 — Go 启动后端
+echo ============================================
 echo.
 
 cd /d "%~dp0backend_v2"
@@ -16,10 +14,10 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+echo [启动] Go 后端...
 set APT_DB_NAME=apt_mining_prod
 set APT_DB_USER=apt_prod
 set APT_DB_PASSWORD=AptProd2026mining
 
-echo [启动] Go 后端...
 echo.
 apt-mining.exe

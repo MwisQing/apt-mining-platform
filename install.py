@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Cross-platform install script for APT Mining Workbench.
+"""Cross-platform install script for APT Mining Workbench v4.0 (Go backend).
 
-Supports Windows and Linux. Creates venv, installs Python deps,
-installs frontend deps, builds frontend, and initializes the database.
+Supports Windows and Linux.
+1. Verifies Go and Node.js are available
+2. Builds Go backend binary
+3. Installs frontend deps and builds frontend
+4. Initializes PostgreSQL database
 """
 import os
 import platform
@@ -12,214 +15,145 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-VENV_DIR = SCRIPT_DIR / "venv"
 IS_WINDOWS = platform.system() == "Windows"
 
 
-def check_prerequisites():
-    """Verify Python and Node.js are available."""
-    python_ok = False
-    try:
-        ver = subprocess.run(
-            [sys.executable, "--version"],
-            capture_output=True, text=True, timeout=5,
-        )
-        print(f"  Python: {ver.stdout.strip()}")
-        python_ok = True
-    except Exception:
-        pass
-    if not python_ok:
-        print("[ERROR] Python 3.10+ not found. Please install Python first.")
-        sys.exit(1)
-
-    node_ok = False
-    for cmd_name in ("node", "nodejs"):
-        try:
-            ver = subprocess.run(
-                [cmd_name, "--version"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if ver.returncode == 0:
-                print(f"  Node.js: {ver.stdout.strip()}")
-                node_ok = True
-                break
-        except FileNotFoundError:
-            continue
-    if not node_ok:
-        print("[ERROR] Node.js 18+ not found. Please install Node.js first.")
-        sys.exit(1)
-
-
-def get_venv_python():
-    """Return the path to the virtualenv Python executable."""
-    if IS_WINDOWS:
-        return VENV_DIR / "Scripts" / "python.exe"
-    return VENV_DIR / "bin" / "python3"
-
-
-def ensure_venv():
-    """Create a virtual environment if one does not exist."""
-    venv_python = get_venv_python()
-    if venv_python.exists():
-        print("  Virtual environment already exists.")
-        return venv_python
-
-    print("  Creating virtual environment...")
-    subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
-
-    if not venv_python.exists():
-        print("[ERROR] Failed to create virtual environment.")
-        sys.exit(1)
-    return venv_python
-
-
-def install_python_deps(venv_python: Path):
-    """Install Python dependencies from requirements.txt."""
-    print("  Installing Python dependencies...")
-    req = SCRIPT_DIR / "requirements.txt"
-    # 优先使用阿里云镜像，如果失败则回退到 PyPI
-    result = subprocess.run(
-        [str(venv_python), "-m", "pip", "install", "-r", str(req),
-         "-i", "https://mirrors.aliyun.com/pypi/simple/"],
-        cwd=SCRIPT_DIR,
-    )
-    if result.returncode != 0:
-        print("  [WARN] 阿里云镜像失败，回退到 PyPI 官方源...")
-        result = subprocess.run(
-            [str(venv_python), "-m", "pip", "install", "-r", str(req)],
-            cwd=SCRIPT_DIR,
-        )
-    if result.returncode != 0:
-        print("[ERROR] Python dependency installation failed.")
-        sys.exit(1)
-
-
-def _get_npm_cmd():
-    """Get npm command with registry configured for China."""
-    base = "npm.cmd" if IS_WINDOWS else "npm"
-    # 使用淘宝 npm 镜像加速
-    return [base, "--registry=https://registry.npmmirror.com"]
-
-
-def install_frontend_deps():
-    """Run npm install in the frontend directory."""
-    frontend_dir = SCRIPT_DIR / "frontend"
-    print("  Installing frontend dependencies...")
-    npm_cmd = _get_npm_cmd()
-    result = subprocess.run(
-        npm_cmd + ["install"],
-        cwd=str(frontend_dir),
-    )
-    if result.returncode != 0:
-        print("  [WARN] npmmirror 失败，回退到官方 npm...")
-        result = subprocess.run(
-            ["npm.cmd" if IS_WINDOWS else "npm", "install"],
-            cwd=str(frontend_dir),
-        )
-    if result.returncode != 0:
-        print("[ERROR] Frontend dependency installation failed.")
-        sys.exit(1)
-
-
-def build_frontend():
-    """Run npm run build in the frontend directory."""
-    frontend_dir = SCRIPT_DIR / "frontend"
-    print("  Building frontend...")
-    npm_cmd = _get_npm_cmd()
-    result = subprocess.run(npm_cmd + ["run", "build"], cwd=str(frontend_dir))
-    if result.returncode != 0:
-        print("[ERROR] Frontend build failed.")
-        sys.exit(1)
-
-
-def check_database(venv_python: Path):
-    """Ensure the database schema is initialized."""
-    print("  Checking database...")
-    # Add backend to sys.path so the import works
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(SCRIPT_DIR)
-    result = subprocess.run(
-        [str(venv_python), "-c", "from backend.utils.db import init_db; init_db(); print('  Database OK')"],
-        cwd=SCRIPT_DIR, env=env,
-    )
-    if result.returncode != 0:
-        print("  [WARN] Database check encountered issues. The first run will retry automatically.")
-
-
-def check_go() -> bool:
-    """Check if Go is installed and available."""
+def check_go():
+    """Verify Go is available."""
     try:
         ver = subprocess.run(
             ["go", "version"],
             capture_output=True, text=True, timeout=5,
         )
-        if ver.returncode == 0:
-            print(f"  Go: {ver.stdout.strip()}")
-            return True
+        print(f"  Go: {ver.stdout.strip()}")
+        return True
     except FileNotFoundError:
-        pass
-    return False
+        print("  [ERROR] Go not found. Install from https://go.dev/dl/")
+        return False
+    except Exception:
+        return False
 
 
-def build_go_backend() -> bool:
-    """Build Go backend binary if Go is available."""
+def check_node():
+    """Verify Node.js is available."""
+    try:
+        ver = subprocess.run(
+            ["node", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        print(f"  Node.js: {ver.stdout.strip()}")
+        return True
+    except FileNotFoundError:
+        print("  [ERROR] Node.js not found. Install from https://nodejs.org/")
+        return False
+    except Exception:
+        return False
+
+
+def build_go():
+    """Build Go backend binary."""
     go_dir = SCRIPT_DIR / "backend_v2"
     if not (go_dir / "go.mod").exists():
-        print("  backend_v2/go.mod not found, skipping Go build.")
-        return True
+        print("  [ERROR] backend_v2/go.mod not found")
+        return False
 
-    if not check_go():
-        print("  [WARN] Go not installed. The Go backend will be built on first start (start.py --go).")
-        print("  To build now, install Go from https://go.dev/ and run: go build -o backend_v2/apt-mining.exe backend_v2/...")
-        return True
-
-    print("  Building Go backend...")
-    go_exe = go_dir / ("apt-mining.exe" if IS_WINDOWS else "apt-mining")
-
-    # Download Go dependencies
+    # Download dependencies
+    print("  Downloading Go dependencies...")
     result = subprocess.run(
         ["go", "mod", "download"],
-        cwd=str(go_dir),
+        cwd=str(go_dir), capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print("  [WARN] go mod download failed. Will retry at runtime.")
-        return True
+        print(f"  [WARN] go mod download: {result.stderr.strip()}")
 
     # Build
+    exe_name = "apt-mining.exe" if IS_WINDOWS else "apt-mining"
+    go_exe = go_dir / exe_name
+    print(f"  Building {exe_name}...")
     result = subprocess.run(
         ["go", "build", "-o", str(go_exe), "."],
-        cwd=str(go_dir),
+        cwd=str(go_dir), capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print("  [WARN] Go build failed. Will retry at runtime.")
+        print(f"  [ERROR] Go build failed:\n{result.stderr}")
+        return False
+    print(f"  OK: {go_exe}")
+    return True
+
+
+def build_frontend():
+    """Install frontend deps and build."""
+    frontend_dir = SCRIPT_DIR / "frontend"
+    pkg_json = frontend_dir / "package.json"
+    if not pkg_json.exists():
+        print("  [WARN] frontend/package.json not found, skipping frontend")
         return True
 
-    print(f"  Go binary: {go_exe}")
+    node_modules = frontend_dir / "node_modules"
+    if not node_modules.exists():
+        print("  Installing frontend dependencies...")
+        result = subprocess.run(
+            "npm install --registry=https://registry.npmmirror.com",
+            shell=True, cwd=str(frontend_dir),
+        )
+        if result.returncode != 0:
+            print("  [ERROR] npm install failed")
+            return False
+
+    print("  Building frontend...")
+    result = subprocess.run(
+        "npx vite build",
+        shell=True, cwd=str(frontend_dir),
+    )
+    if result.returncode != 0:
+        print("  [ERROR] frontend build failed")
+        return False
+    print("  OK: frontend/dist/")
+    return True
+
+
+def check_database():
+    """Initialize PostgreSQL tables."""
+    migrations = SCRIPT_DIR / "backend_v2" / "migrations" / "001_initial.up.sql"
+    if not migrations.exists():
+        print("  [WARN] Migration file not found, skipping DB init")
+        return True
+
+    print("  Run init_db.bat (Windows) or apply migrations manually")
     return True
 
 
 def main():
-    separator = "=" * 50
-    print(separator)
-    print("APT Mining Workbench - Install Runtime")
-    print(separator)
-    print()
+    print("=" * 40)
+    print("APT Mining Workbench v4.0 - Install")
+    print("=" * 40)
 
-    check_prerequisites()
-    print()
+    # 1. Check prerequisites
+    print("\n[1/4] Checking prerequisites...")
+    if not check_go():
+        sys.exit(1)
+    check_node()  # optional for production
 
-    venv_python = ensure_venv()
-    install_python_deps(venv_python)
-    install_frontend_deps()
-    build_frontend()
-    build_go_backend()
-    check_database(venv_python)
+    # 2. Build Go backend
+    print("\n[2/4] Building Go backend...")
+    if not build_go():
+        sys.exit(1)
 
-    print()
-    print(separator)
-    mode_label = "start.bat" if IS_WINDOWS else "./start.sh"
-    print(f"Done. Run {mode_label} to launch the workbench.")
-    print(separator)
+    # 3. Build frontend
+    print("\n[3/4] Building frontend...")
+    if not build_frontend():
+        print("  Continuing without frontend...")
+
+    # 4. Database
+    print("\n[4/4] Database...")
+    check_database()
+
+    print("\n" + "=" * 40)
+    print("Install complete!")
+    print("  Start:  python start.py")
+    print("  Test:   python start.py --test")
+    print("  Stop:   python stop.py")
+    print("=" * 40)
 
 
 if __name__ == "__main__":

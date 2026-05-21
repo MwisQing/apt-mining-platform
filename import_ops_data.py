@@ -6,73 +6,84 @@
     python import_ops_data.py ops-export.json --test    # 导入测试库
 """
 import json
-import subprocess
 import sys
 import os
-from pathlib import Path
+
+import psycopg2
 
 PG_HOST = "127.0.0.1"
 PG_PORT = 5432
-PG_USER = "postgres"
-PG_PASS = "562245610"  # 改成你的 postgres 密码
+PG_USER_PROD = "apt_prod"
+PG_USER_TEST = "apt_test"
+PG_PASS_PROD = "AptProd2026mining"  # 正式库密码
+PG_PASS_TEST = "AptTest2026mining"  # 测试库密码
 PG_PROD_DB = "apt_mining_prod"
 PG_TEST_DB = "apt_mining_test"
-PG_BIN = r"C:\Program Files\PostgreSQL\18\bin\psql.exe"
 
+# 导入顺序：无依赖表先导入，依赖表后导入（满足外键约束）
 TABLES = [
-    "mined_events", "mined_event_devices", "mined_event_iocs",
-    "event_followups", "traced_targets", "tags", "tag_batches",
-    "device_tags", "imports", "import_sheets", "config_data",
+    "mined_events",
+    "tag_batches",
+    "traced_targets",
+    "imports",
+    "mined_event_devices",
+    "mined_event_iocs",
+    "event_followups",
+    "tags",
+    "device_tags",
+    "import_sheets",
 ]
 
 
-def run_psql(db, sql):
-    env = os.environ.copy()
-    env["PGPASSWORD"] = PG_PASS
-    return subprocess.run(
-        [PG_BIN, "-h", PG_HOST, "-U", PG_USER, "-d", db, "-c", sql],
-        env=env, capture_output=True, text=True,
+def get_connection(db, user, password):
+    return psycopg2.connect(
+        host=PG_HOST, port=PG_PORT,
+        dbname=db, user=user, password=password,
     )
 
 
-def run_psql_multi(db, sql_text):
-    env = os.environ.copy()
-    env["PGPASSWORD"] = PG_PASS
-    return subprocess.run(
-        [PG_BIN, "-h", PG_HOST, "-U", PG_USER, "-d", db],
-        env=env, input=sql_text, capture_output=True, text=True,
-    )
+def get_pg_columns(conn, table):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s "
+            "AND is_identity='NO' ORDER BY ordinal_position",
+            (table,)
+        )
+        return [row[0] for row in cur.fetchall()]
 
 
-def get_pg_columns(db, table):
-    r = run_psql(db, (
-        f"SELECT column_name FROM information_schema.columns "
-        f"WHERE table_schema='public' AND table_name='{table}' "
-        f"AND is_identity='NO' ORDER BY ordinal_position;"
-    ))
-    return [line.strip() for line in r.stdout.strip().split("\n")
-            if line.strip() and line.strip() != "column_name"]
+def get_pg_data_types(conn, table):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
+            (table,)
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
 
 
-def get_pg_data_types(db, table):
-    r = run_psql(db, (
-        f"SELECT column_name, data_type FROM information_schema.columns "
-        f"WHERE table_schema='public' AND table_name='{table}' ORDER BY ordinal_position;"
-    ))
-    types = {}
-    for line in r.stdout.strip().split("\n"):
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) == 2:
-            types[parts[0]] = parts[1]
-    return types
+def convert_value(val, dtype):
+    """将 JSON 值转为适合 psycopg2 的 Python 对象。"""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if dtype in ("integer", "bigint", "smallint"):
+            return int(val)
+        return val
+    return str(val)
 
 
-def import_table(db, table, rows, pg_types):
+def import_table(conn, table, rows, pg_types):
     if not rows:
         print(f"  {table}: 无数据，跳过")
         return 0, 0
 
-    pg_cols = get_pg_columns(db, table)
+    pg_cols = get_pg_columns(conn, table)
     if not pg_cols:
         print(f"  {table}: 表不存在或无列，跳过")
         return 0, 0
@@ -83,80 +94,89 @@ def import_table(db, table, rows, pg_types):
         print(f"  {table}: 无共有列，跳过")
         return 0, 0
 
-    pg_col_list = ", ".join(f'"{c}"' for c in common_cols)
-    values_batch = []
+    col_placeholders = ", ".join(f'"{c}"' for c in common_cols)
+    value_placeholders = ", ".join(["%s"] * len(common_cols))
+    sql = (
+        f"INSERT INTO {table} ({col_placeholders}) "
+        f"VALUES ({value_placeholders}) ON CONFLICT DO NOTHING"
+    )
+
     inserted = 0
     skipped = 0
+    batch = []
 
     for row in rows:
-        vals = []
-        for col in common_cols:
-            val = row.get(col)
-            dtype = pg_types.get(col, "text")
-            if val is None:
-                vals.append("NULL")
-            elif isinstance(val, bool):
-                vals.append("TRUE" if val else "FALSE")
-            elif isinstance(val, (int, float)):
-                vals.append(str(int(val)) if dtype in ("integer", "bigint", "smallint") else str(val))
-            else:
-                vals.append(f"'{str(val).replace(chr(39), chr(39)+chr(39))}'")
-        values_batch.append("(" + ", ".join(vals) + ")")
+        vals = tuple(
+            convert_value(row.get(col), pg_types.get(col, "text"))
+            for col in common_cols
+        )
+        batch.append(vals)
 
-        if len(values_batch) >= 500:
-            sql = f"INSERT INTO {table} ({pg_col_list}) VALUES {', '.join(values_batch)} ON CONFLICT DO NOTHING;"
-            r = run_psql_multi(db, sql)
-            if r.returncode == 0:
-                inserted += len(values_batch)
-            else:
-                for vv in values_batch:
-                    r1 = run_psql(db, f"INSERT INTO {table} ({pg_col_list}) VALUES {vv} ON CONFLICT DO NOTHING;")
-                    if r1.returncode == 0:
+        if len(batch) >= 500:
+            try:
+                with conn.cursor() as cur:
+                    cur.executemany(sql, batch)
+                conn.commit()
+                inserted += len(batch)
+            except Exception as e:
+                conn.rollback()
+                # 逐行重试
+                for vv in batch:
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, vv)
+                        conn.commit()
                         inserted += 1
-                    else:
+                    except Exception:
+                        conn.rollback()
                         skipped += 1
-            values_batch = []
+            batch = []
 
-    if values_batch:
-        sql = f"INSERT INTO {table} ({pg_col_list}) VALUES {', '.join(values_batch)} ON CONFLICT DO NOTHING;"
-        r = run_psql_multi(db, sql)
-        if r.returncode == 0:
-            inserted += len(values_batch)
-        else:
-            for vv in values_batch:
-                r1 = run_psql(db, f"INSERT INTO {table} ({pg_col_list}) VALUES {vv} ON CONFLICT DO NOTHING;")
-                if r1.returncode == 0:
+    if batch:
+        try:
+            with conn.cursor() as cur:
+                cur.executemany(sql, batch)
+            conn.commit()
+            inserted += len(batch)
+        except Exception as e:
+            conn.rollback()
+            for vv in batch:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, vv)
+                    conn.commit()
                     inserted += 1
-                else:
+                except Exception:
+                    conn.rollback()
                     skipped += 1
 
     print(f"  {table}: 成功 {inserted}, 跳过 {skipped} (共 {len(rows)} 条)")
     return inserted, skipped
 
 
-def fix_sequences(db):
-    for table in TABLES:
-        r = run_psql(db, (
-            f"SELECT column_name, pg_get_serial_sequence(table_name, column_name) "
-            f"FROM information_schema.columns WHERE table_name='{table}' "
-            f"AND column_default LIKE 'nextval%%';"
-        ))
-        sql_parts = []
-        for line in r.stdout.strip().split("\n"):
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) == 2 and parts[1]:
-                col_name, seq_name = parts
-                tbl = seq_name.split(".")[0].strip('"')
-                sql_parts.append(
-                    f"SELECT setval('{seq_name}', "
-                    f"COALESCE((SELECT MAX({col_name}) FROM {tbl}), 1), true);"
-                )
-        if sql_parts:
-            run_psql_multi(db, "\n".join(sql_parts))
+def fix_sequences(conn):
+    with conn.cursor() as cur:
+        for table in TABLES:
+            cur.execute(
+                "SELECT column_name, pg_get_serial_sequence(table_name, column_name) "
+                "FROM information_schema.columns WHERE table_name=%s "
+                "AND column_default LIKE 'nextval%%'",
+                (table,)
+            )
+            for col_name, seq_name in cur.fetchall():
+                if seq_name:
+                    cur.execute(
+                        f"SELECT setval(%s, COALESCE((SELECT MAX({col_name}) "
+                        f"FROM {table}), 1), true)",
+                        (seq_name,)
+                    )
+    conn.commit()
 
 
 def main():
     db = PG_PROD_DB
+    user = PG_USER_PROD
+    password = PG_PASS_PROD
     input_file = None
 
     i = 0
@@ -164,6 +184,8 @@ def main():
     while i < len(args):
         if args[i] == "--test":
             db = PG_TEST_DB
+            user = PG_USER_TEST
+            password = PG_PASS_TEST
             i += 1
         elif args[i] in ("--help", "-h"):
             print(__doc__)
@@ -180,7 +202,6 @@ def main():
         data = json.load(f)
 
     tables_data = data.get("tables", {})
-    pg_types_cache = {t: get_pg_data_types(db, t) for t in TABLES}
 
     print("=" * 50)
     print(f"APT Mining — 导入运营数据到 {db}")
@@ -188,21 +209,31 @@ def main():
     print("=" * 50)
     print()
 
-    total_ins, total_skip = 0, 0
-    for table in TABLES:
-        if table not in tables_data:
-            continue
-        ins, skip = import_table(db, table, tables_data[table], pg_types_cache.get(table, {}))
-        total_ins += ins
-        total_skip += skip
+    conn = get_connection(db, user, password)
+    try:
+        pg_types_cache = {}
+        for t in TABLES:
+            pg_types_cache[t] = get_pg_data_types(conn, t)
 
-    print()
-    print("对齐序列...")
-    fix_sequences(db)
+        total_ins, total_skip = 0, 0
+        for table in TABLES:
+            if table not in tables_data:
+                continue
+            ins, skip = import_table(
+                conn, table, tables_data[table], pg_types_cache.get(table, {})
+            )
+            total_ins += ins
+            total_skip += skip
+
+        print()
+        print("对齐序列...")
+        fix_sequences(conn)
+    finally:
+        conn.close()
 
     print()
     print(f"导入完成！成功 {total_ins}, 跳过 {total_skip}")
-    print(f"请重启后端 (python start.py --go) 使数据生效。")
+    print(f"请重启后端使数据生效。")
 
 
 if __name__ == "__main__":
