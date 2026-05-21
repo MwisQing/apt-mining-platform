@@ -146,7 +146,7 @@ func (s *ImportService) processImport(id int, filename string) {
 			id, sheetName, sheetIdx, 1, 0, "processing", time.Now(),
 		).Scan(&sheetID)
 
-		// 批量插入
+		// 批量插入（SELECT WHERE NOT EXISTS 不依赖唯一索引，适用于非 DBA 环境）
 		tx, _ := s.DB.Begin()
 		stmt, err := tx.Prepare(`
 			INSERT INTO alerts (
@@ -156,8 +156,9 @@ func (s *ImportService) processImport(id int, filename string) {
 				down_traffic, up_traffic, asset_type, source_file, imported_at,
 				analysis_status, is_focused, import_id, import_sheet_id, excel_row_number,
 				sheet_name, content_hash, unique_hash
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
-			ON CONFLICT (content_hash) DO NOTHING
+			)
+			SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+			WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE content_hash = $29)
 		`)
 		if err != nil {
 			tx.Rollback()
@@ -182,7 +183,7 @@ func (s *ImportService) processImport(id int, filename string) {
 				continue
 			}
 
-			_, err = stmt.Exec(
+			result, err := stmt.Exec(
 				vals.DeviceID, vals.FirstAlertTime, vals.LastAlertTime,
 				vals.SourceIP, vals.Target, vals.TargetType, vals.Port,
 				vals.ThreatType, vals.ThreatLevel, vals.StdAptOrg, vals.AptOrg,
@@ -197,8 +198,13 @@ func (s *ImportService) processImport(id int, filename string) {
 				totalFailed++
 				continue
 			}
-			totalInserted++
-			batchCount++
+			affected, _ := result.RowsAffected()
+			if affected > 0 {
+				totalInserted++
+				batchCount++
+			} else {
+				totalSkipped++
+			}
 
 			// 每 500 行 commit 一次
 			if batchCount >= 500 {
@@ -213,8 +219,9 @@ func (s *ImportService) processImport(id int, filename string) {
 						down_traffic, up_traffic, asset_type, source_file, imported_at,
 						analysis_status, is_focused, import_id, import_sheet_id, excel_row_number,
 						sheet_name, content_hash, unique_hash
-					) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
-					ON CONFLICT (content_hash) DO NOTHING
+					)
+					SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+					WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE content_hash = $29)
 				`)
 				batchCount = 0
 			}
@@ -244,9 +251,17 @@ type alertRow struct {
 
 func extractRow(row []string, headerMap map[string]int) *alertRow {
 	v := &alertRow{}
-	get := func(name string) string {
+	get := func(name string, fallbacks ...string) string {
 		if idx, ok := headerMap[name]; ok && idx < len(row) {
-			return strings.TrimSpace(row[idx])
+			val := strings.TrimSpace(row[idx])
+			if val != "" {
+				return val
+			}
+		}
+		for _, fb := range fallbacks {
+			if idx, ok := headerMap[fb]; ok && idx < len(row) {
+				return strings.TrimSpace(row[idx])
+			}
 		}
 		return ""
 	}
@@ -255,14 +270,14 @@ func extractRow(row []string, headerMap map[string]int) *alertRow {
 	v.FirstAlertTime = get("首次告警时间")
 	v.LastAlertTime = get("最近告警时间")
 	v.SourceIP = get("源IP")
-	v.Target = get("外联目标")
+	v.Target = get("外联目标", "目标")
 	v.TargetType = get("目标类型")
-	v.Port = get("端口")
+	v.Port = get("端口", "外联端口")
 	v.ThreatType = get("威胁类型")
 	v.ThreatLevel = get("威胁等级")
 	v.StdAptOrg = get("标准APT组织")
-	v.AptOrg = get("原始APT组织")
-	v.AptOrgTier = get("APT分级")
+	v.AptOrg = get("原始APT组织", "APT组织")
+	v.AptOrgTier = get("APT分级", "APT组织分类")
 
 	ac := get("告警次数")
 	if ac != "" {

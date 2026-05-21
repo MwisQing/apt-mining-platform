@@ -18,6 +18,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 IS_WINDOWS = platform.system() == "Windows"
 
 
+def go_env(go_dir: Path) -> dict:
+    """Keep Go build cache inside the repo to avoid host cache permission issues."""
+    env = os.environ.copy()
+    cache_dir = go_dir / ".gocache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("GOCACHE", str(cache_dir))
+    return env
+
+
 def check_go():
     """Verify Go is available."""
     try:
@@ -56,12 +65,13 @@ def build_go():
     if not (go_dir / "go.mod").exists():
         print("  [ERROR] backend_v2/go.mod not found")
         return False
+    env = go_env(go_dir)
 
     # Download dependencies
     print("  Downloading Go dependencies...")
     result = subprocess.run(
         ["go", "mod", "download"],
-        cwd=str(go_dir), capture_output=True, text=True,
+        cwd=str(go_dir), capture_output=True, text=True, env=env,
     )
     if result.returncode != 0:
         print(f"  [WARN] go mod download: {result.stderr.strip()}")
@@ -72,7 +82,7 @@ def build_go():
     print(f"  Building {exe_name}...")
     result = subprocess.run(
         ["go", "build", "-o", str(go_exe), "."],
-        cwd=str(go_dir), capture_output=True, text=True,
+        cwd=str(go_dir), capture_output=True, text=True, env=env,
     )
     if result.returncode != 0:
         print(f"  [ERROR] Go build failed:\n{result.stderr}")

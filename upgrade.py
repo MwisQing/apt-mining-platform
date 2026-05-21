@@ -40,6 +40,15 @@ EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
 IS_LINUX = os.name != "nt"
 
 
+def go_env(go_dir: Path) -> dict:
+    """Keep Go build cache inside the repo to avoid host cache permission issues."""
+    env = os.environ.copy()
+    cache_dir = go_dir / ".gocache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("GOCACHE", str(cache_dir))
+    return env
+
+
 def print_header():
     print("=" * 40)
     print("APT Mining Workbench - 一键升级")
@@ -94,12 +103,15 @@ def backup_database() -> str:
         return ""
 
 
-def _merge_dir(src, dst):
+def _merge_dir(src, dst, skip_version=False):
     """Merge src directory into dst, overwriting individual files but preserving
-    files that exist only in dst (local files not in the zip)."""
+    files that exist only in dst (local files not in the zip).
+    skip_version=True 时排除子目录中的 VERSION 文件（统一使用根目录的 VERSION）。"""
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():
         if item.name in EXCLUDE_DIRS:
+            continue
+        if skip_version and item.name == "VERSION":
             continue
         for pat in EXCLUDE_FILE_PATTERNS:
             if fnmatch.fnmatch(item.name, pat):
@@ -107,7 +119,7 @@ def _merge_dir(src, dst):
         else:
             dest_item = dst / item.name
             if item.is_dir():
-                _merge_dir(item, dest_item)
+                _merge_dir(item, dest_item, skip_version=True)
             else:
                 shutil.copy2(item, dest_item)
 
@@ -241,11 +253,12 @@ def install_backend_deps() -> bool:
     if not (go_dir / "go.mod").exists():
         print("  backend_v2/go.mod 不存在，跳过依赖安装。")
         return True
+    env = go_env(go_dir)
 
     print("  正在下载 Go 依赖...")
     result = subprocess.run(
         ["go", "mod", "download"],
-        cwd=str(go_dir), capture_output=True, text=True,
+        cwd=str(go_dir), capture_output=True, text=True, env=env,
     )
     if result.returncode != 0:
         print(f"  [WARN] go mod download: {result.stderr.strip()}")
@@ -295,16 +308,20 @@ def build_go_backend() -> bool:
     if not (go_dir / "go.mod").exists():
         print("  backend_v2/go.mod 不存在，跳过 Go 构建。")
         return True
+    env = go_env(go_dir)
 
     if not check_go():
-        print("  [WARN] Go 未安装。首次启动时 start.py --go 会自动编译。")
-        print("  如需预编译，请安装 Go 后手动执行: go build -o backend_v2/apt-mining.exe backend_v2/...")
+        print("  [WARN] Go 未安装。可在安装 Go 后执行 python start.py 触发自动编译。")
+        print("  如需预编译，请安装 Go 后手动执行: cd backend_v2 && go build -o apt-mining.exe .")
         return True
 
     print("  正在编译 Go 后端...")
 
     # Download dependencies
-    result = run("cd backend_v2 && go mod download")
+    result = subprocess.run(
+        ["go", "mod", "download"],
+        cwd=str(go_dir), env=env, capture_output=True, text=True,
+    )
     if result.returncode != 0:
         print("  [WARN] go mod download 失败，将重试。")
 
@@ -317,10 +334,10 @@ def build_go_backend() -> bool:
 
     result = subprocess.run(
         ["go", "build", "-o", str(go_exe), "."],
-        cwd=str(go_dir),
+        cwd=str(go_dir), env=env,
     )
     if result.returncode != 0:
-        print("  [WARN] Go 编译失败。start.py --go 启动时会自动重试。")
+        print("  [WARN] Go 编译失败。安装 Go 后可改用 python start.py 重新触发编译。")
         return True
 
     print(f"  Go 二进制: {go_exe}")
@@ -465,7 +482,7 @@ def main():
 
     print()
     print("=" * 40)
-    print("升级完成！请执行 start.bat 启动平台。")
+    print("升级完成！请执行 startGo.bat 或 python start.py 启动平台。")
     if backup_path:
         print(f"数据库已备份到备份文件: {backup_path}")
     print("=" * 40)

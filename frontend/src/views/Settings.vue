@@ -1134,10 +1134,9 @@ async function handleUploadExcel({ file }) {
       uploadProgress.value = pct
     })
     uploadProgress.value = 100
-    // 立即显示处理状态，不要等 loadImports 轮询才显示
-    const jobs = result?.jobs || []
-    if (jobs.length > 0) {
-      const job = jobs[0]
+    // 后端返回单个对象 {id, source_file, status, ...}，兼容可能的数组格式
+    const job = result?.jobs ? result.jobs[0] : result
+    if (job) {
       if (job.duplicate) {
         // 文件已经上传过，直接提示
         ElMessage.info('该文件已上传过（' + job.source_file + '），已跳过重复导入。')

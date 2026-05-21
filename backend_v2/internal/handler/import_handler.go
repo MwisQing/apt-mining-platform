@@ -26,6 +26,15 @@ func NewImportHandler(svc *service.ImportService, uploadDir string) *ImportHandl
 
 // UploadExcel POST /api/imports
 func (h *ImportHandler) UploadExcel(c *gin.Context) {
+	// Ensure upload directory exists
+	if err := os.MkdirAll(h.UploadDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("create upload dir: %v", err)})
+		return
+	}
+
+	// Increase multipart memory limit for large Excel files (up to 500MB)
+	c.Request.ParseMultipartForm(500 << 20)
+
 	file, err := c.FormFile("files")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no file uploaded"})

@@ -13,3 +13,4 @@ static/*
 !static/.gitkeep
 data/
 vendor/
+.gocache/

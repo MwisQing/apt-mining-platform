@@ -14,7 +14,7 @@ const uploadApi = axios.create({
 api.interceptors.response.use(
   (response) => response.data,
   (error) => {
-    let detail = error.response?.data?.detail
+    let detail = error.response?.data?.detail || error.response?.data?.error
     if (Array.isArray(detail)) {
       detail = detail.map(d => d.msg || JSON.stringify(d)).join('; ')
     }
@@ -26,7 +26,7 @@ api.interceptors.response.use(
 uploadApi.interceptors.response.use(
   (response) => response.data,
   (error) => {
-    let detail = error.response?.data?.detail
+    let detail = error.response?.data?.detail || error.response?.data?.error
     if (Array.isArray(detail)) {
       detail = detail.map(d => d.msg || JSON.stringify(d)).join('; ')
     }

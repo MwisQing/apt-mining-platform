@@ -23,4 +23,7 @@ set APT_DB_PASSWORD=AptTest2026mining
 
 echo [启动] Go 后端 (测试实例)...
 echo.
+
+start http://127.0.0.1:9099
+
 apt-mining.exe

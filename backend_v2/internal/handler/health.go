@@ -108,11 +108,17 @@ func (h *HealthHandler) Persistence(c *gin.Context) {
 // Version GET /api/version
 func (h *VersionHandler) Version(c *gin.Context) {
 	version := "unknown"
-	// 基于可执行文件所在目录查找 VERSION 文件
+	// 优先读取项目根目录 VERSION（可执行文件在 backend_v2/ 时，父目录即项目根）
 	baseDir := config.BaseDir()
-	versionPath := filepath.Join(baseDir, "VERSION")
-	if data, err := os.ReadFile(versionPath); err == nil {
+	rootVersionPath := filepath.Join(baseDir, "..", "VERSION")
+	if data, err := os.ReadFile(rootVersionPath); err == nil {
 		version = strings.TrimSpace(string(data))
+	} else {
+		// 回退：读取可执行文件同目录下的 VERSION
+		localVersionPath := filepath.Join(baseDir, "VERSION")
+		if data, err := os.ReadFile(localVersionPath); err == nil {
+			version = strings.TrimSpace(string(data))
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

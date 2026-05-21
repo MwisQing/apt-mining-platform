@@ -19,6 +19,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 IS_WINDOWS = platform.system() == "Windows"
 
 
+def go_env(go_dir: Path) -> dict:
+    """Keep Go build cache inside the repo to avoid host cache permission issues."""
+    env = os.environ.copy()
+    cache_dir = go_dir / ".gocache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("GOCACHE", str(cache_dir))
+    return env
+
+
 def port_in_use(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.3)
@@ -138,9 +147,10 @@ def main():
     go_exe = go_dir / ("apt-mining.exe" if IS_WINDOWS else "apt-mining")
     if not go_exe.exists():
         print("Go binary not found. Building...")
+        go_build_env = go_env(go_dir)
         result = subprocess.run(
             ["go", "build", "-o", str(go_exe), "."],
-            cwd=str(go_dir), capture_output=True, text=True,
+            cwd=str(go_dir), capture_output=True, text=True, env=go_build_env,
         )
         if result.returncode != 0:
             print(f"[ERROR] Go build failed:\n{result.stderr}")

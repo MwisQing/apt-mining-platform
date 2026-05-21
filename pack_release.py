@@ -23,9 +23,18 @@ os.chdir(SCRIPT_DIR)
 EXCLUDE_DIRS = {
     "data", "uploads", "backups", "venv", "node_modules",
     ".git", ".claude", "__pycache__", "releases", "_release_tmp",
-    "logs","uploads-test",
+    "logs", "uploads-test",
 }
 EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
+
+
+def go_env(go_dir: Path) -> dict:
+    """Keep Go build cache inside the repo to avoid host cache permission issues."""
+    env = os.environ.copy()
+    cache_dir = go_dir / ".gocache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env.setdefault("GOCACHE", str(cache_dir))
+    return env
 
 
 def print_header():
@@ -58,10 +67,15 @@ def suggest_version(old_ver: str) -> str:
 
 
 def copy_ignore_func(_dir, files):
-    """shutil.copytree ignore 回调，排除 __pycache__、*.pyc、node_modules"""
+    """shutil.copytree ignore 回调，排除 __pycache__、*.pyc、node_modules、.gocache、VERSION（子目录）"""
     ignored = [f for f in files if fnmatch.fnmatch(f, "*.pyc")]
     if "node_modules" in files:
         ignored.append("node_modules")
+    if ".gocache" in files:
+        ignored.append(".gocache")
+    # 排除子目录中的 VERSION 文件（统一使用根目录的 VERSION）
+    if "VERSION" in files:
+        ignored.append("VERSION")
     return ignored
 
 
@@ -103,13 +117,14 @@ def build_go_backend() -> bool:
     if not (go_dir / "go.mod").exists():
         print("  警告: backend_v2/go.mod 不存在，跳过 Go 构建")
         return True
+    env = go_env(go_dir)
 
     print("  正在构建 Go 后端...")
 
     # Download dependencies
     result = subprocess.run(
         ["go", "mod", "download"],
-        cwd=str(go_dir),
+        cwd=str(go_dir), env=env,
     )
     if result.returncode != 0:
         print("  [WARN] go mod download 失败")
@@ -125,22 +140,22 @@ def build_go_backend() -> bool:
     if is_windows:
         result = subprocess.run(
             ["go", "build", "-o", "apt-mining.exe", "."],
-            cwd=str(go_dir),
+            cwd=str(go_dir), env=env,
         )
     else:
         # Cross-compile both targets
         result = subprocess.run(
             ["go", "build", "-o", "apt-mining", "."],
-            cwd=str(go_dir),
+            cwd=str(go_dir), env=env,
         )
         if result.returncode == 0:
             # Also build Windows binary
-            env = os.environ.copy()
-            env["GOOS"] = "windows"
-            env["GOARCH"] = "amd64"
+            cross_env = env.copy()
+            cross_env["GOOS"] = "windows"
+            cross_env["GOARCH"] = "amd64"
             subprocess.run(
                 ["go", "build", "-o", "apt-mining.exe", "."],
-                cwd=str(go_dir), env=env,
+                cwd=str(go_dir), env=cross_env,
             )
 
     if result.returncode != 0:

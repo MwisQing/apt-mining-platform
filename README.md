@@ -37,7 +37,19 @@
 
 ### 一键启动（Windows）
 
-双击 `startGo.bat`，自动初始化数据库并启动后端服务。
+首次使用先执行 `init_db.bat` 初始化 PostgreSQL，再双击 `startGo.bat` 启动已编译的后端服务。
+
+如果还没有编译 Go 二进制，可先运行：
+
+```bash
+python install.py
+```
+
+也可以直接运行跨平台启动器：
+
+```bash
+python start.py
+```
 
 浏览器访问 `http://127.0.0.1:8088`
 
@@ -48,7 +60,7 @@
 init_db.bat
 
 # 2. 启动后端
-cd backend
+cd backend_v2
 go run main.go
 
 # 生产环境：编译为单文件
@@ -63,7 +75,7 @@ go build -o apt-mining.exe
 
 ```bash
 # 后端（终端1）
-cd backend
+cd backend_v2
 go run main.go
 
 # 前端（终端2）
