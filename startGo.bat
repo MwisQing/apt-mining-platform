@@ -9,16 +9,23 @@ echo Port: 8088
 echo DB: apt_mining_prod
 echo.
 
-cd /d "%~dp0backend_v2"
-if %errorlevel% neq 0 (
-    echo [错误] 未找到 backend_v2 目录
+cd /d "%~dp0"
+
+REM Load .env
+for /f "tokens=1* delims==" %%a in ('findstr /v "^#" .env 2^>nul') do (
+    set "%%a=%%b"
+)
+
+if "%APT_DB_PASSWORD_PROD%"=="" (
+    echo [错误] .env 中 APT_DB_PASSWORD_PROD 未设置
     pause
     exit /b 1
 )
 
-set APT_DB_NAME=apt_mining_prod
-set APT_DB_USER=apt_prod
-set APT_DB_PASSWORD=AptProd2026mining
+cd /d "%~dp0backend_v2"
+set APT_DB_NAME=%APT_DB_NAME_PROD%
+set APT_DB_USER=%APT_DB_USER_PROD%
+set APT_DB_PASSWORD=%APT_DB_PASSWORD_PROD%
 
 echo [启动] Go 后端...
 echo.

@@ -40,6 +40,33 @@ EXCLUDE_FILE_PATTERNS = {"*.pyc", "tmp_*.db", "*_regression.db"}
 IS_LINUX = os.name != "nt"
 
 
+def load_dotenv():
+    """Load .env file into os.environ (silently skip if missing)."""
+    env_file = SCRIPT_DIR / ".env"
+    if not env_file.exists():
+        return
+    with open(env_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key and value:
+                    os.environ.setdefault(key, value)
+
+
+def db_env() -> tuple:
+    """Return (user, password) for production database from .env."""
+    load_dotenv()
+    return (
+        os.environ.get("APT_DB_USER_PROD", "apt_prod"),
+        os.environ.get("APT_DB_PASSWORD_PROD", ""),
+    )
+
+
 def go_env(go_dir: Path) -> dict:
     """Keep Go build cache inside the repo to avoid host cache permission issues."""
     env = os.environ.copy()
@@ -82,12 +109,13 @@ def backup_database() -> str:
     backup_path = backups_dir / f"apt_mining_prod_{timestamp}.sql"
 
     pg_dump = r"C:\Program Files\PostgreSQL\18\bin\pg_dump.exe" if os.name == "nt" else "pg_dump"
+    db_user, db_pass = db_env()
     env = os.environ.copy()
-    env["PGPASSWORD"] = "AptProd2026mining"
+    env["PGPASSWORD"] = db_pass
 
     try:
         result = subprocess.run(
-            [pg_dump, "-h", "127.0.0.1", "-U", "apt_prod",
+            [pg_dump, "-h", "127.0.0.1", "-U", db_user,
              "-d", "apt_mining_prod", "-f", str(backup_path)],
             env=env, capture_output=True, text=True, timeout=120,
         )

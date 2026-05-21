@@ -10,12 +10,28 @@ echo.
 set "PG_BIN=C:\Program Files\PostgreSQL\18\bin\psql.exe"
 set "PG_HOST=127.0.0.1"
 set "PG_PORT=5432"
-set "PG_USER=apt_prod"
-set "PG_PASS=AptProd2026mining"
-set "PG_DB=apt_mining_prod"
 
-REM 检查是否指定了测试库
-if "%1"=="--test" set "PG_DB=apt_mining_test"
+REM Load .env
+cd /d "%~dp0"
+for /f "tokens=1* delims==" %%a in ('findstr /v "^#" .env 2^>nul') do (
+    set "%%a=%%b"
+)
+
+if "%1"=="--test" (
+    set "PG_USER=%APT_DB_USER_TEST%"
+    set "PG_PASS=%APT_DB_PASSWORD_TEST%"
+    set "PG_DB=%APT_DB_NAME_TEST%"
+) else (
+    set "PG_USER=%APT_DB_USER_PROD%"
+    set "PG_PASS=%APT_DB_PASSWORD_PROD%"
+    set "PG_DB=%APT_DB_NAME_PROD%"
+)
+
+if "%PG_PASS%"=="" (
+    echo [错误] .env 中密码未设置
+    pause
+    exit /b 1
+)
 
 echo 数据库: %PG_DB%
 echo.

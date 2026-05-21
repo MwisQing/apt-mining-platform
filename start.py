@@ -161,11 +161,16 @@ def main():
     env = os.environ.copy()
     env["APT_SERVER_HOST"] = host
     env["APT_SERVER_PORT"] = str(port)
-    env["APT_DB_NAME"] = "apt_mining_test" if args.test else "apt_mining_prod"
-    env["APT_DB_HOST"] = "127.0.0.1"
-    env["APT_DB_PORT"] = "5432"
-    env["APT_DB_USER"] = "apt_test" if args.test else "apt_prod"
-    env["APT_DB_PASSWORD"] = "AptTest2026mining" if args.test else "AptProd2026mining"
+    env["APT_DB_HOST"] = os.environ.get("APT_DB_HOST", "127.0.0.1")
+    env["APT_DB_PORT"] = os.environ.get("APT_DB_PORT", "5432")
+    if args.test:
+        env["APT_DB_NAME"] = os.environ.get("APT_DB_NAME_TEST", "apt_mining_test")
+        env["APT_DB_USER"] = os.environ.get("APT_DB_USER_TEST", "apt_test")
+        env["APT_DB_PASSWORD"] = os.environ.get("APT_DB_PASSWORD_TEST", "")
+    else:
+        env["APT_DB_NAME"] = os.environ.get("APT_DB_NAME_PROD", "apt_mining_prod")
+        env["APT_DB_USER"] = os.environ.get("APT_DB_USER_PROD", "apt_prod")
+        env["APT_DB_PASSWORD"] = os.environ.get("APT_DB_PASSWORD_PROD", "")
     env["APT_UPLOAD_TMP"] = str(SCRIPT_DIR / ("uploads-test" if args.test else "uploads"))
 
     os.makedirs(env["APT_UPLOAD_TMP"], exist_ok=True)

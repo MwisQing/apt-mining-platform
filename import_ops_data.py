@@ -8,17 +8,12 @@
 import json
 import sys
 import os
+from pathlib import Path
 
 import psycopg2
 
 PG_HOST = "127.0.0.1"
 PG_PORT = 5432
-PG_USER_PROD = "apt_prod"
-PG_USER_TEST = "apt_test"
-PG_PASS_PROD = "AptProd2026mining"  # 正式库密码
-PG_PASS_TEST = "AptTest2026mining"  # 测试库密码
-PG_PROD_DB = "apt_mining_prod"
-PG_TEST_DB = "apt_mining_test"
 
 # 导入顺序：无依赖表先导入，依赖表后导入（满足外键约束）
 TABLES = [
@@ -173,19 +168,38 @@ def fix_sequences(conn):
     conn.commit()
 
 
+def load_dotenv():
+    """Load .env file into os.environ."""
+    env_file = Path(__file__).resolve().parent / ".env"
+    if not env_file.exists():
+        return
+    with open(env_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key and value:
+                    os.environ.setdefault(key, value)
+
+
 def main():
-    db = PG_PROD_DB
-    user = PG_USER_PROD
-    password = PG_PASS_PROD
+    load_dotenv()
+    db = os.environ.get("APT_DB_NAME_PROD", "apt_mining_prod")
+    user = os.environ.get("APT_DB_USER_PROD", "apt_prod")
+    password = os.environ.get("APT_DB_PASSWORD_PROD", "")
     input_file = None
 
     i = 0
     args = sys.argv[1:]
     while i < len(args):
         if args[i] == "--test":
-            db = PG_TEST_DB
-            user = PG_USER_TEST
-            password = PG_PASS_TEST
+            db = os.environ.get("APT_DB_NAME_TEST", "apt_mining_test")
+            user = os.environ.get("APT_DB_USER_TEST", "apt_test")
+            password = os.environ.get("APT_DB_PASSWORD_TEST", "")
             i += 1
         elif args[i] in ("--help", "-h"):
             print(__doc__)
