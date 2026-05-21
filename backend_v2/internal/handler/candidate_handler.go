@@ -39,6 +39,9 @@ func (h *CandidateHandler) QueryCandidates(c *gin.Context) {
 	if dt := c.Query("device_tags"); dt != "" {
 		p.DeviceTags = splitCSV(dt)
 	}
+	if did := c.Query("device_ids"); did != "" {
+		p.DeviceIDs = splitCSV(did)
+	}
 	if tt := c.Query("threat_types"); tt != "" {
 		p.ThreatTypes = splitCSV(tt)
 	}
@@ -47,6 +50,12 @@ func (h *CandidateHandler) QueryCandidates(c *gin.Context) {
 	}
 	if at := c.Query("apt_tiers"); at != "" {
 		p.AptTiers = splitCSV(at)
+	}
+	if ao := c.Query("apt_orgs"); ao != "" {
+		p.AptOrgs = splitCSV(ao)
+	}
+	if pt := c.Query("ports"); pt != "" {
+		p.Ports = splitCSV(pt)
 	}
 	if et := c.Query("exclude_device_tags"); et != "" {
 		p.ExcludeTags = splitCSV(et)

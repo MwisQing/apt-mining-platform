@@ -70,15 +70,18 @@ type CandidateItem struct {
 	IocNote           string         `json:"ioc_note"`
 	AnalysisStatus    string         `json:"analysis_status"`
 	IsFocused         bool           `json:"is_focused"`
+	SourceIPCount     int            `json:"source_ip_count"`
+	DeviceIDCount     int            `json:"device_id_count"`
 }
 
 // CandidateResponse 候选 API 响应
 type CandidateResponse struct {
-	Items    []CandidateItem `json:"items"`
-	Total    int64           `json:"total"`
-	Page     int             `json:"page"`
-	PageSize int             `json:"page_size"`
-	Meta     ResponseMeta    `json:"meta"`
+	Items         []CandidateItem      `json:"items"`
+	Total         int64                `json:"total"`
+	Page          int                  `json:"page"`
+	PageSize      int                  `json:"page_size"`
+	Meta          ResponseMeta         `json:"meta"`
+	FilterOptions map[string][]string  `json:"filter_options,omitempty"`
 }
 
 // ResponseMeta 响应元数据

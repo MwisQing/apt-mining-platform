@@ -26,6 +26,9 @@ type CandidateQueryParams struct {
 	ThreatTypes  []string
 	ThreatLevels []string
 	AptTiers     []string
+	AptOrgs      []string
+	DeviceIDs    []string
+	Ports        []string
 	ExcludeTags  []string
 	HideTraced   bool
 	HideClosed   bool
@@ -157,6 +160,39 @@ func BuildWhereSQL(p *CandidateQueryParams) (string, []interface{}, int) {
 		whereSQL = strings.Join(whereClauses, " AND ")
 	}
 
+	// 设备ID筛选
+	if len(p.DeviceIDs) > 0 {
+		placeholders := make([]string, len(p.DeviceIDs))
+		for i, did := range p.DeviceIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, did)
+			argIdx++
+		}
+		whereSQL += fmt.Sprintf(" AND a.device_id IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	// 端口筛选
+	if len(p.Ports) > 0 {
+		placeholders := make([]string, len(p.Ports))
+		for i, pt := range p.Ports {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, pt)
+			argIdx++
+		}
+		whereSQL += fmt.Sprintf(" AND a.port IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	// 标准APT组织筛选
+	if len(p.AptOrgs) > 0 {
+		placeholders := make([]string, len(p.AptOrgs))
+		for i, ao := range p.AptOrgs {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, ao)
+			argIdx++
+		}
+		whereSQL += fmt.Sprintf(" AND a.std_apt_org IN (%s)", strings.Join(placeholders, ","))
+	}
+
 	return whereSQL, args, argIdx
 }
 
@@ -184,6 +220,8 @@ type CandidateRow struct {
 	HeatTargetDeviceCount int             `json:"heat_target_device_count"`
 	HeatSourceIPAlertCnt  int             `json:"heat_source_ip_alert_count"`
 	HeatDeviceAlertCount  int             `json:"heat_device_alert_count"`
+	DeviceIDCount         int             `json:"device_id_count"`
+	SourceIPCount         int             `json:"source_ip_count"`
 	EventID               *int64          `json:"event_id"`
 	EventName             *string         `json:"event_name"`
 	EventStatus           *string         `json:"event_status"`
@@ -208,6 +246,7 @@ func (r *CandidateRepo) QueryCandidates(p *CandidateQueryParams) ([]CandidateRow
 			"threat_type": true, "threat_level": true, "alert_count": true,
 			"first_alert_time": true, "last_alert_time": true, "std_apt_org": true,
 			"apt_org_tier": true, "analysis_status": true, "is_focused": true,
+			"device_id_count": true,
 		}
 		if allowedSort[p.SortBy] {
 			sortField = p.SortBy
@@ -331,6 +370,7 @@ SELECT json_build_object(
     'heat_target_device_count', heat_target_device_count,
     'heat_source_ip_alert_count', heat_source_ip_alert_count,
     'heat_device_alert_count', heat_device_alert_count,
+    'device_id_count', heat_device_alert_count,
     'event_id', event_id,
     'event_name', event_name,
     'event_status', event_status,
@@ -339,7 +379,8 @@ SELECT json_build_object(
     'trace_status', trace_status,
     'trace_note', trace_note,
     'device_tags_json', device_tags_json,
-    'candidate_score', candidate_score
+    'candidate_score', candidate_score,
+    'source_ip_count', heat_source_ip_alert_count
 ) AS row_json
 FROM scored
 ORDER BY %s %s
@@ -456,8 +497,8 @@ func alertColumnsSQL() string {
 }
 
 // GetFilterOptions 获取筛选选项
-func (r *CandidateRepo) GetFilterOptions() (map[string]interface{}, error) {
-	options := make(map[string]interface{})
+func (r *CandidateRepo) GetFilterOptions() (map[string][]string, error) {
+	options := make(map[string][]string)
 
 	// 威胁类型
 	threatTypes := make([]string, 0)
@@ -468,7 +509,7 @@ func (r *CandidateRepo) GetFilterOptions() (map[string]interface{}, error) {
 		typeStrRows.Scan(&v)
 		threatTypes = append(threatTypes, v)
 	}
-	options["threat_types"] = threatTypes
+	options["threat_type"] = threatTypes
 
 	// 威胁等级
 	threatLevels := make([]string, 0)
@@ -479,40 +520,70 @@ func (r *CandidateRepo) GetFilterOptions() (map[string]interface{}, error) {
 		levelRows.Scan(&v)
 		threatLevels = append(threatLevels, v)
 	}
-	options["threat_levels"] = threatLevels
+	options["threat_level"] = threatLevels
 
-	// 目标类型
-	targetTypes := make([]string, 0)
-	targetTypeRows, _ := r.DB.Query("SELECT DISTINCT target_type FROM alerts WHERE target_type IS NOT NULL AND target_type != '' ORDER BY target_type")
-	defer targetTypeRows.Close()
-	for targetTypeRows.Next() {
+	// 端口
+	ports := make([]string, 0)
+	portRows, _ := r.DB.Query("SELECT DISTINCT port FROM alerts WHERE port IS NOT NULL AND port != '' ORDER BY port")
+	defer portRows.Close()
+	for portRows.Next() {
 		var v string
-		targetTypeRows.Scan(&v)
-		targetTypes = append(targetTypes, v)
+		portRows.Scan(&v)
+		ports = append(ports, v)
 	}
-	options["target_types"] = targetTypes
+	options["port"] = ports
 
-	// 设备标签
-	type tagInfo struct {
-		ID    int    `json:"id"`
-		Name  string `json:"name"`
-		Color string `json:"color"`
+	// 标准APT组织
+	stdAptOrgs := make([]string, 0)
+	aptOrgRows, _ := r.DB.Query("SELECT DISTINCT std_apt_org FROM alerts WHERE std_apt_org IS NOT NULL AND std_apt_org != '' ORDER BY std_apt_org")
+	defer aptOrgRows.Close()
+	for aptOrgRows.Next() {
+		var v string
+		aptOrgRows.Scan(&v)
+		stdAptOrgs = append(stdAptOrgs, v)
 	}
-	tags := make([]tagInfo, 0)
+	options["std_apt_org"] = stdAptOrgs
+
+	// 设备ID
+	deviceIDs := make([]string, 0)
+	deviceRows, _ := r.DB.Query("SELECT DISTINCT device_id FROM alerts WHERE device_id IS NOT NULL AND device_id != '' ORDER BY device_id")
+	defer deviceRows.Close()
+	for deviceRows.Next() {
+		var v string
+		deviceRows.Scan(&v)
+		deviceIDs = append(deviceIDs, v)
+	}
+	options["device_id"] = deviceIDs
+
+	// 源IP
+	sourceIPs := make([]string, 0)
+	ipRows, _ := r.DB.Query("SELECT DISTINCT source_ip FROM alerts WHERE source_ip IS NOT NULL AND source_ip != '' ORDER BY source_ip")
+	defer ipRows.Close()
+	for ipRows.Next() {
+		var v string
+		ipRows.Scan(&v)
+		sourceIPs = append(sourceIPs, v)
+	}
+	options["source_ip"] = sourceIPs
+
+	// 设备标签名称
+	tagNames := make([]string, 0)
 	tagRows, _ := r.DB.Query(`
-		SELECT t.id, t.name, t.color
+		SELECT DISTINCT t.name
 		FROM tags t
 		INNER JOIN device_tags dt ON dt.tag_id = t.id
-		GROUP BY t.id, t.name, t.color
+		WHERE (t.batch_id IS NULL OR EXISTS (
+			SELECT 1 FROM tag_batches tb WHERE tb.id = t.batch_id AND tb.status = 'active'
+		))
 		ORDER BY t.name
 	`)
 	defer tagRows.Close()
 	for tagRows.Next() {
-		var t tagInfo
-		tagRows.Scan(&t.ID, &t.Name, &t.Color)
-		tags = append(tags, t)
+		var v string
+		tagRows.Scan(&v)
+		tagNames = append(tagNames, v)
 	}
-	options["device_tags"] = tags
+	options["device_tags"] = tagNames
 
 	return options, nil
 }

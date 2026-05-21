@@ -32,16 +32,19 @@ func (s *CandidateService) QueryCandidates(p *repository.CandidateQueryParams) (
 		items = append(items, item)
 	}
 
+	filterOptions, _ := s.Repo.GetFilterOptions()
+
 	return &model.CandidateResponse{
-		Items:    items,
-		Total:    total,
-		Page:     p.Page,
-		PageSize: p.PageSize,
+		Items:         items,
+		Total:         total,
+		Page:          p.Page,
+		PageSize:      p.PageSize,
 		Meta: model.ResponseMeta{
 			PlatformScope:         "all_alerts",
 			CandidateScope:        "scored_and_sorted",
 			DifferencesFromScript: "none",
 		},
+		FilterOptions: filterOptions,
 	}, nil
 }
 
@@ -65,6 +68,8 @@ func (s *CandidateService) rowToItem(row repository.CandidateRow) model.Candidat
 		AnalysisStatus:    row.AnalysisStatus,
 		IsFocused:         row.IsFocused == 1,
 		CandidateScore:    row.CandidateScore,
+		SourceIPCount:     row.SourceIPCount,
+		DeviceIDCount:     row.DeviceIDCount,
 		Badges:            make([]model.Badge, 0),
 		CandidateRuleIDs:  make([]string, 0),
 		CandidateReasons:  make([]string, 0),

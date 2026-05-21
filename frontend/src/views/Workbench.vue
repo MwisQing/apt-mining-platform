@@ -215,6 +215,40 @@
             <div class="resizable-header">
               <span class="col-label-text">{{ colLabel('device_id') }}</span>
               <SortButton :active="sortField" :order="sortOrder" column-key="device_id" @sort="handleSortClick" />
+              <el-popover trigger="click" :width="280" placement="bottom-end">
+                <template #reference>
+                  <el-icon class="header-filter-icon" :class="{ 'is-active': hasFilter('device_id') }">
+                    <Filter />
+                  </el-icon>
+                </template>
+                <div class="column-filter">
+                  <el-input
+                    v-model="deviceIdFilterSearch"
+                    placeholder="搜索设备ID"
+                    size="small"
+                    clearable
+                  >
+                    <template #prefix>
+                      <el-icon><Search /></el-icon>
+                    </template>
+                  </el-input>
+                  <el-checkbox-group v-model="columnFiltersPending.device_id" class="column-filter-group">
+                    <el-checkbox
+                      v-for="val in filteredDeviceIdOptions"
+                      :key="val"
+                      :label="val"
+                      :value="val"
+                    >
+                      {{ val }}
+                    </el-checkbox>
+                  </el-checkbox-group>
+                  <div class="column-filter__actions">
+                    <el-button size="small" text @click="columnFiltersPending.device_id = _extractValues('device_id')">全选</el-button>
+                    <el-button size="small" text @click="columnFiltersPending.device_id = []">清空</el-button>
+                    <el-button size="small" type="primary" @click="applyColumnFilter('device_id')" :disabled="!hasPendingColumnFilterChange('device_id')">确定</el-button>
+                  </div>
+                </div>
+              </el-popover>
               <span class="resize-handle" @mousedown.stop="onResizeStart('device_id', $event)"></span>
             </div>
           </template>
@@ -320,7 +354,7 @@
         <el-table-column
           v-if="colVisible('device_target_count')"
           :width="colWidth('device_target_count')"
-          prop="heat.device_target_count"
+          prop="device_id_count"
           align="center"
         >
           <template #header>
@@ -331,7 +365,7 @@
             </div>
           </template>
           <template #default="{ row }">
-            <span class="count-cell">{{ row.heat?.device_target_count || 0 }}</span>
+            <span class="count-cell">{{ row.device_id_count || 0 }}</span>
           </template>
         </el-table-column>
 
@@ -379,7 +413,7 @@
             </div>
           </template>
           <template #default="{ row }">
-            <span class="count-cell">{{ row.source_ip_count ?? (row.source_ip ? 1 : 0) }}</span>
+            <span class="count-cell">{{ row.source_ip_count ?? 0 }}</span>
           </template>
         </el-table-column>
 
@@ -770,11 +804,11 @@
           <div class="event-ioc-list">
             <el-tag
               v-for="ioc in eventForm.iocs"
-              :key="`${ioc.target}:${ioc.port || ''}`"
+              :key="ioc"
               size="small"
               effect="dark"
             >
-              {{ ioc.target }}{{ ioc.port ? `:${ioc.port}` : '' }}
+              {{ ioc }}
             </el-tag>
           </div>
         </el-form-item>
@@ -963,7 +997,8 @@ function openEventDialog(row) {
     row.std_apt_org ? `APT组织: ${row.std_apt_org}` : '',
   ].filter(Boolean).join('\n')
   eventForm.devices = row.device_id ? [row.device_id] : []
-  eventForm.iocs = target ? [{ target, port }] : []
+  const iocStr = target && port ? `${target}:${port}` : (target || '')
+  eventForm.iocs = iocStr ? [iocStr] : []
   eventDialogVisible.value = true
 }
 
@@ -1033,7 +1068,7 @@ const excludeTags = ref([])
 const excludeTagsPending = ref([])
 const tagOptions = ref([])
 const keyword = ref('')
-const sortField = ref('device_target_count')
+const sortField = ref('device_id_count')
 const sortOrder = ref('asc')
 
 const tableData = shallowRef([])
@@ -1091,7 +1126,10 @@ async function loadData() {
       params.exclude_device_tags = excludeTags.value.join(',')
     }
 
-    // Column filters → backend SQL-level filtering via snapshot
+    // Column filters → backend SQL-level filtering
+    if (columnFilters.device_id.length > 0) {
+      params.device_ids = columnFilters.device_id.join(',')
+    }
     if (columnFilters.device_tags.length > 0) {
       params.device_tags = columnFilters.device_tags.join(',')
     }
@@ -1166,6 +1204,7 @@ function handlePageSizeChange() {
 // --- Column header filtering ---
 
 const columnFilters = reactive({
+  device_id: [],
   device_tags: [],
   threat_type: [],
   std_apt_org: [],
@@ -1177,6 +1216,7 @@ const columnFilters = reactive({
 
 // Pending (uncommitted) filter state — only applied when user clicks "确定"
 const columnFiltersPending = reactive({
+  device_id: [],
   device_tags: [],
   threat_type: [],
   std_apt_org: [],
@@ -1186,9 +1226,18 @@ const columnFiltersPending = reactive({
   ioc_note: '',
 })
 
-const FILTERABLE_COLUMNS = ['device_tags', 'threat_type', 'std_apt_org', 'priority', 'port', 'badges', 'ioc_note']
+const FILTERABLE_COLUMNS = ['device_id', 'device_tags', 'threat_type', 'std_apt_org', 'priority', 'port', 'badges', 'ioc_note']
 
 const filterOptions = ref({})
+
+// Device ID filter search
+const deviceIdFilterSearch = ref('')
+const filteredDeviceIdOptions = computed(() => {
+  const all = _extractValues('device_id')
+  const search = deviceIdFilterSearch.value.toLowerCase()
+  if (!search) return all
+  return all.filter(v => v.toLowerCase().includes(search))
+})
 
 function hasFilter(key) {
   if (key === 'ioc_note') return !!columnFilters.ioc_note
@@ -1289,7 +1338,7 @@ function extractSortValue(row, key) {
     case 'score':
       return row.candidate_score ?? 0
     case 'device_target_count':
-      return row.heat?.device_target_count ?? 0
+      return row.device_id_count ?? 0
     case 'source_ip':
       return row.source_ips || row.source_ip || ''
     case 'source_ip_count':
@@ -1316,9 +1365,26 @@ function compareBySortField(a, b, key) {
   return String(av || '').localeCompare(String(bv || ''), 'zh-CN', { numeric: true, sensitivity: 'base' })
 }
 
-// 分页展示数据
+// 分页展示数据（后端分页 + 本地筛选兜底）
 const displayData = computed(() => {
-  return tableData.value
+  const raw = tableData.value
+  const hasLocalFilters = FILTERABLE_COLUMNS.some(k => {
+    if (k === 'ioc_note') return !!columnFilters.ioc_note
+    return Array.isArray(columnFilters[k]) && columnFilters[k].length > 0
+  })
+  const hasTopFilters = targetKind.value !== 'all' || (hideTraced.value && keyword.value) || excludeTags.value.length > 0
+
+  if (!hasLocalFilters && !hasTopFilters) return raw
+
+  const filtered = raw.filter(row => {
+    if (!rowMatchesTopFilters(row)) return false
+    for (const key of FILTERABLE_COLUMNS) {
+      if (!_rowMatchesFilter(row, key)) return false
+    }
+    return true
+  })
+  total.value = filtered.length
+  return filtered
 })
 
 const displayTotal = computed(() => {
