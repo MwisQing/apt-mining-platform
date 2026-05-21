@@ -144,13 +144,26 @@ def read_version() -> str:
     return "未知"
 
 
+def parse_version(full_ver: str) -> tuple:
+    """将 '4.0.1 go重构平台' 拆分为 ('4.0.1', 'go重构平台')"""
+    parts = full_ver.split(None, 1)
+    ver = parts[0] if parts else "0.0.0"
+    desc = parts[1] if len(parts) > 1 else ""
+    return ver, desc
+
+
 def tag_exists(tag: str) -> bool:
     result = run(f'git tag -l "{tag}"', capture=True)
     return bool(result.stdout.strip())
 
 
-def create_and_push_tag(tag: str) -> bool:
-    run(f"git tag {tag}")
+def create_and_push_tag(tag: str, message: str = "") -> bool:
+    if message:
+        result = run(f'git tag -a "{tag}" -m "{message}"')
+    else:
+        result = run(f'git tag "{tag}"')
+    if result.returncode != 0:
+        return False
     result = run("git push origin --tags --force")
     return result.returncode == 0
 
@@ -217,15 +230,17 @@ def main():
     print("  完成")
 
     # 标签
-    ver = read_version()
+    full_ver = read_version()
+    ver, desc = parse_version(full_ver)
     tag = f"v{ver}"
+    tag_msg = desc if desc else f"Release v{ver}"
     print(f"\n创建标签 {tag}...")
     if tag_exists(tag):
         print(f"  标签 {tag} 已存在。")
         confirm = input(f"  是否更新到当前提交? [y/N]: ").strip()
         if confirm.lower() == "y":
-            run(f"git tag -d {tag}")
-            if not create_and_push_tag(tag):
+            run(f'git tag -d "{tag}"')
+            if not create_and_push_tag(tag, tag_msg):
                 print(f"  标签 {tag} 推送失败！")
                 input("按任意键继续...")
                 sys.exit(1)
@@ -233,7 +248,7 @@ def main():
         else:
             print(f"  跳过标签更新。")
     else:
-        if create_and_push_tag(tag):
+        if create_and_push_tag(tag, tag_msg):
             print(f"  标签 {tag} 推送成功。")
         else:
             print(f"  标签 {tag} 推送失败！")
