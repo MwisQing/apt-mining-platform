@@ -364,7 +364,7 @@ async function handleSubmit() {
     loadEvents()
     ElMessage.success('事件已提交并保存')
   } catch (e) {
-    ElMessage.error(`提交失败: ${e.response?.data?.detail || e.message}`)
+    ElMessage.error(`提交失败: ${e.response?.data?.error || e.response?.data?.detail || e.message}`)
   } finally {
     submitting.value = false
   }

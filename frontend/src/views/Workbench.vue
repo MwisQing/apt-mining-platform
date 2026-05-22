@@ -777,7 +777,7 @@
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           :total="displayTotal"
-          :page-sizes="[50, 100, 200]"
+          :page-sizes="[1000, 2000, 5000]"
           layout="total, sizes, prev, pager, next"
           background
           @size-change="handlePageSizeChange"
@@ -1076,7 +1076,7 @@ const allTableData = shallowRef([])
 const loading = ref(false)
 const loadingText = computed(() => loading.value ? '正在加载候选数据，请稍候...' : '')
 const currentPage = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(1000)
 const total = ref(0)
 let requestSeq = 0
 
@@ -1102,6 +1102,7 @@ async function loadTagOptions() {
 
 async function loadData() {
   const requestId = ++requestSeq
+  console.log(`[loadData] request #${requestId} start`, new Date().toISOString())
   loading.value = true
   try {
     const params = {
@@ -1151,8 +1152,16 @@ async function loadData() {
       params.sort_order = sortOrder.value || 'desc'
     }
 
+    const apiUrl = `/api/alert-candidates?${new URLSearchParams(params).toString()}`
+    console.log(`[loadData] request #${requestId} calling API: ${apiUrl}`)
+    const t0 = Date.now()
     const res = await fetchCandidates(params)
-    if (requestId !== requestSeq) return
+    const elapsed = Date.now() - t0
+    console.log(`[loadData] request #${requestId} returned in ${elapsed}ms, total=${res.total}, items=${(res.items||[]).length}`)
+    if (requestId !== requestSeq) {
+      console.log(`[loadData] request #${requestId} superseded by #${requestSeq}, dropping`)
+      return
+    }
     const items = res.items || []
     total.value = res.total || 0
     if (res.filter_options) {
@@ -1171,12 +1180,14 @@ async function loadData() {
     }
     excludeTagsPending.value = [...excludeTags.value]
   } catch (e) {
+    console.error(`[loadData] request #${requestId} ERROR:`, e.message, e)
     if (requestId !== requestSeq) return
     ElMessage.error(`加载候选数据失败: ${e.message}`)
     tableData.value = []
     allTableData.value = []
     total.value = 0
   } finally {
+    console.log(`[loadData] request #${requestId} finally, loading -> false`)
     if (requestId === requestSeq) loading.value = false
   }
 }
@@ -1376,19 +1387,24 @@ const displayData = computed(() => {
 
   if (!hasLocalFilters && !hasTopFilters) return raw
 
-  const filtered = raw.filter(row => {
+  return raw.filter(row => {
     if (!rowMatchesTopFilters(row)) return false
     for (const key of FILTERABLE_COLUMNS) {
       if (!_rowMatchesFilter(row, key)) return false
     }
     return true
   })
-  total.value = filtered.length
-  return filtered
 })
 
 const displayTotal = computed(() => {
-  return total.value
+  const hasLocalFilters = FILTERABLE_COLUMNS.some(k => {
+    if (k === 'ioc_note') return !!columnFilters.ioc_note
+    return Array.isArray(columnFilters[k]) && columnFilters[k].length > 0
+  })
+  const hasTopFilters = targetKind.value !== 'all' || (hideTraced.value && keyword.value) || excludeTags.value.length > 0
+
+  if (!hasLocalFilters && !hasTopFilters) return total.value
+  return displayData.value.length
 })
 
 // 当表头筛选条件变化时，自动回到第 1 页，并在需要时加载全量数据
@@ -1751,7 +1767,30 @@ onMounted(async () => {
   margin-top: 12px;
   display: flex;
   justify-content: flex-end;
-  padding: 8px 0;
+  padding: 12px 48px;
+  min-width: 100%;
+  width: 100%;
+}
+
+.pagination-bar :deep(.el-pager li) {
+  min-width: 96px;
+  height: 36px;
+  line-height: 36px;
+  font-size: 15px;
+}
+
+.pagination-bar :deep(.el-pagination .btn-prev),
+.pagination-bar :deep(.el-pagination .btn-next) {
+  min-width: 96px;
+  height: 36px;
+}
+
+.pagination-bar :deep(.el-pagination__sizes .el-select) {
+  width: 120px;
+}
+
+.pagination-bar :deep(.el-pagination__total) {
+  font-size: 15px;
 }
 
 .device-tags-cell {

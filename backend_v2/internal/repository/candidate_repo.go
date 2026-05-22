@@ -57,7 +57,8 @@ func BuildWhereSQL(p *CandidateQueryParams) (string, []interface{}, int) {
 		argIdx++
 	}
 	if p.DateEnd != "" {
-		addWhere(fmt.Sprintf("a.first_alert_time <= $%d", argIdx), p.DateEnd)
+		// Use < (end_date + 1 day) to include the entire end date up to 23:59:59
+		addWhere(fmt.Sprintf("a.first_alert_time < ($%d::date + interval '1 day')", argIdx), p.DateEnd)
 		argIdx++
 	}
 
@@ -140,9 +141,9 @@ func BuildWhereSQL(p *CandidateQueryParams) (string, []interface{}, int) {
 		addWhere("NOT EXISTS (SELECT 1 FROM traced_targets tt WHERE tt.target = a.target AND COALESCE(tt.port, '') = COALESCE(a.port, ''))")
 	}
 
-	// 隐藏已关闭事件
+	// 隐藏已关闭事件（支持 IOC 端口通配：mei.port = '*' 匹配该目标所有端口）
 	if p.HideClosed {
-		addWhere("NOT EXISTS (SELECT 1 FROM mined_events me WHERE me.status = 'closed' AND EXISTS (SELECT 1 FROM mined_event_iocs mei WHERE mei.event_id = me.id AND mei.target = a.target AND COALESCE(mei.port, '') = COALESCE(a.port, '')))")
+		addWhere("NOT EXISTS (SELECT 1 FROM mined_events me WHERE me.status = 'closed' AND EXISTS (SELECT 1 FROM mined_event_iocs mei WHERE mei.event_id = me.id AND mei.target = a.target AND (COALESCE(mei.port, '') = COALESCE(a.port, '') OR mei.port = '*')))")
 	}
 
 	// 关键词搜索（GIN 全文搜索）
@@ -304,6 +305,7 @@ scored AS (
         COALESCE(h.target_device_count, 1) AS heat_target_device_count,
         COALESCE(sih.source_ip_alert_count, 1) AS heat_source_ip_alert_count,
         COALESCE(dh.device_alert_count, 1) AS heat_device_alert_count,
+        COALESCE(dh.device_alert_count, 1) AS device_id_count,
         e.event_id, e.event_name, e.event_status, e.event_color,
         CASE WHEN e.event_id IS NOT NULL AND EXISTS (
             SELECT 1 FROM mined_event_devices med WHERE med.event_id = e.event_id AND UPPER(med.device_id) = UPPER(a.device_id)

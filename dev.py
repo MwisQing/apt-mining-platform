@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Cross-platform start script for APT Mining Workbench v4.0 (Go backend).
+"""Development start script for APT Mining Workbench v4.0 (Go backend).
+
+Uses `go run` instead of pre-built binary, so code changes are always picked up.
 
 Usage:
-    python start.py [--test]
-
-Supports Windows and Linux. Detects platform for port check and browser auto-open.
-In test mode, uses isolated port/DB/uploads.
+    python dev.py [--test] [--no-browser] [--host HOST] [--port PORT]
 """
 import argparse
 import os
@@ -20,7 +19,7 @@ IS_WINDOWS = platform.system() == "Windows"
 
 
 def go_env(go_dir: Path) -> dict:
-    """Keep Go build cache inside the repo to avoid host cache permission issues."""
+    """Keep Go build cache inside the repo."""
     env = os.environ.copy()
     cache_dir = go_dir / ".gocache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -35,7 +34,7 @@ def port_in_use(host: str, port: int) -> bool:
 
 
 def kill_existing_on_port(host: str, port: int):
-    """Attempt to kill any process listening on the given port."""
+    """Kill any process listening on the given port."""
     if IS_WINDOWS:
         try:
             cmd = [
@@ -50,31 +49,8 @@ def kill_existing_on_port(host: str, port: int):
                 if line.isdigit():
                     pids.add(int(line))
             for pid in pids:
-                print(f"  Staling process PID={pid} on port {port}, killing...")
+                print(f"  Stale process PID={pid} on port {port}, killing...")
                 subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
-        except Exception:
-            pass
-    else:
-        try:
-            result = subprocess.run(
-                ["lsof", "-ti", f"tcp:{port}"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.stdout.strip():
-                for line in result.stdout.strip().splitlines():
-                    pid = line.strip()
-                    if pid.isdigit():
-                        print(f"  Staling process PID={pid} on port {port}, killing...")
-                        os.kill(int(pid), 9)
-                        print(f"  Killed PID={pid}")
-        except FileNotFoundError:
-            try:
-                subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
-                print(f"  Killed process on port {port} via fuser")
-            except FileNotFoundError:
-                print(f"  [WARN] Neither lsof nor fuser found. Cannot kill process on port {port}.")
-            except Exception:
-                pass
         except Exception:
             pass
 
@@ -84,43 +60,21 @@ def open_browser(host: str, port: int):
         import webbrowser
         webbrowser.open(f"http://{host}:{port}")
     except Exception:
-        if not IS_WINDOWS:
-            try:
-                subprocess.Popen(["xdg-open", f"http://{host}:{port}"])
-            except Exception:
-                pass
-
-
-def needs_rebuild(go_dir: Path, go_exe: Path) -> bool:
-    """Check if any Go source file is newer than the compiled binary."""
-    if not go_exe.exists():
-        return True
-    exe_mtime = go_exe.stat().st_mtime
-    for ext in ("*.go"):
-        for f in go_dir.rglob(ext):
-            # Skip cache and vendor directories
-            parts = f.relative_to(go_dir).parts
-            if parts[0] in (".gocache", "vendor"):
-                continue
-            if f.stat().st_mtime > exe_mtime:
-                return True
-    return False
+        pass
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Start APT Mining Workbench v4.0 (Go)")
+    parser = argparse.ArgumentParser(description="Start APT Mining Workbench v4.0 (dev mode: go run)")
     parser.add_argument("--test", action="store_true", help="Run in test mode (port 9099, isolated DB)")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
     parser.add_argument("--host", type=str, default=None, help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Port number (default: 8088 or 9099 for test)")
-    parser.add_argument("--no-rebuild", action="store_true", help="Skip auto-rebuild even if source changed")
     args = parser.parse_args()
 
-    default_host = "127.0.0.1"
-    host = args.host or default_host
+    host = args.host or "127.0.0.1"
     port = args.port or (9099 if args.test else 8088)
 
-    # Load .env file if present
+    # Load .env
     env_file = SCRIPT_DIR / ".env"
     if env_file.exists():
         with open(env_file, encoding='utf-8') as f:
@@ -137,9 +91,10 @@ def main():
 
     auto_open = not args.no_browser and os.environ.get("APT_AUTO_OPEN_BROWSER", "1").lower() not in {"0", "false", "no"}
 
-    mode_label = "Test Mode" if args.test else "Starting"
+    mode_label = "Test Mode (dev)" if args.test else "Starting (dev)"
     print("======================================")
     print(f"APT Mining Workbench v4.0 - {mode_label}")
+    print("Mode: go run (no build needed)")
     print("======================================")
     print(f"Backend: http://{host}:{port}")
     if args.test:
@@ -147,6 +102,7 @@ def main():
     else:
         print(f"DB: apt_mining_prod")
 
+    # Free port
     if port_in_use(host, port):
         print(f"Port {port} is in use. Attempting to free it...")
         kill_existing_on_port(host, port)
@@ -159,29 +115,13 @@ def main():
     if auto_open:
         open_browser(host, port)
 
-    # Launch Go backend
+    # Run Go directly (no build)
     go_dir = SCRIPT_DIR / "backend_v2"
-    go_exe = go_dir / ("apt-mining.exe" if IS_WINDOWS else "apt-mining")
-    go_build_env = go_env(go_dir)
+    if not (go_dir / "go.mod").exists():
+        print(f"[ERROR] {go_dir}/go.mod not found")
+        sys.exit(1)
 
-    if not go_exe.exists() or (not args.no_rebuild and needs_rebuild(go_dir, go_exe)):
-        if not go_exe.exists():
-            print("Go binary not found. Building...")
-        else:
-            print("Source changed, rebuilding...")
-        result = subprocess.run(
-            ["go", "build", "-o", str(go_exe), "."],
-            cwd=str(go_dir), capture_output=True, text=True, env=go_build_env,
-        )
-        if result.returncode != 0:
-            print(f"[ERROR] Go build failed:\n{result.stderr}")
-            sys.exit(1)
-        print("Go build complete.")
-    elif go_exe.exists():
-        print(f"Using existing binary: {go_exe}")
-
-    # Set environment for Go backend
-    env = os.environ.copy()
+    env = go_env(go_dir)
     env["APT_SERVER_HOST"] = host
     env["APT_SERVER_PORT"] = str(port)
     env["APT_DB_HOST"] = os.environ.get("APT_DB_HOST", "127.0.0.1")
@@ -198,10 +138,12 @@ def main():
 
     os.makedirs(env["APT_UPLOAD_TMP"], exist_ok=True)
 
-    cmd = [str(go_exe)]
-    print(f"Launching: {go_exe}")
+    print(f"Running: go run main.go")
     print()
-    completed = subprocess.run(cmd, cwd=str(go_dir), env=env)
+    completed = subprocess.run(
+        ["go", "run", "main.go"],
+        cwd=str(go_dir), env=env,
+    )
     sys.exit(completed.returncode)
 
 

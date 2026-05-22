@@ -122,6 +122,35 @@ def build_frontend():
     return True
 
 
+def sync_static():
+    """Copy frontend/dist/ into backend_v2/static/ so Go serves latest build."""
+    dist = SCRIPT_DIR / "frontend" / "dist"
+    if not dist.exists():
+        print("  [WARN] frontend/dist/ not found, skipping static sync")
+        return True
+
+    static_dir = SCRIPT_DIR / "backend_v2" / "static"
+    assets_dir = static_dir / "assets"
+
+    # Clean old files
+    for p in list(static_dir.glob("*.html")) + list(static_dir.glob("*.json")):
+        p.unlink()
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    for p in list(assets_dir.glob("*.js")) + list(assets_dir.glob("*.css")):
+        p.unlink()
+
+    # Copy
+    shutil.copy2(dist / "index.html", static_dir)
+    if (dist / "columns.json").exists():
+        shutil.copy2(dist / "columns.json", static_dir)
+    for f in (dist / "assets").iterdir():
+        if f.is_file():
+            shutil.copy2(f, assets_dir)
+
+    print(f"  OK: synced frontend/dist/ -> backend_v2/static/")
+    return True
+
+
 def check_database():
     """Initialize PostgreSQL tables."""
     migrations = SCRIPT_DIR / "backend_v2" / "migrations" / "001_initial.up.sql"
@@ -139,23 +168,28 @@ def main():
     print("=" * 40)
 
     # 1. Check prerequisites
-    print("\n[1/4] Checking prerequisites...")
+    print("\n[1/5] Checking prerequisites...")
     if not check_go():
         sys.exit(1)
     check_node()  # optional for production
 
     # 2. Build Go backend
-    print("\n[2/4] Building Go backend...")
+    print("\n[2/5] Building Go backend...")
     if not build_go():
         sys.exit(1)
 
     # 3. Build frontend
-    print("\n[3/4] Building frontend...")
+    print("\n[3/5] Building frontend...")
     if not build_frontend():
         print("  Continuing without frontend...")
 
+    # 3b. Sync frontend into Go static dir
+    print("\n[4/5] Syncing frontend static files...")
+    if not sync_static():
+        print("  [WARN] static sync failed, Go will serve stale frontend")
+
     # 4. Database
-    print("\n[4/4] Database...")
+    print("\n[5/5] Database...")
     check_database()
 
     print("\n" + "=" * 40)
