@@ -252,17 +252,28 @@
                   default-first-option
                   placeholder="选择或输入新标签名"
                   class="batch-tag-select"
+                  @change="onTagSelect"
                 >
                   <el-option
-                    v-for="tag in existingTagNames"
-                    :key="tag"
-                    :label="tag"
-                    :value="tag"
+                    v-for="tag in existingTags"
+                    :key="tag.id"
+                    :label="tag.name"
+                    :value="tag.name"
                   />
                 </el-select>
               </el-form-item>
               <el-form-item label="颜色">
-                <el-color-picker v-model="batchAddForm.color" size="small" />
+                <div class="color-presets-row">
+                  <span
+                    v-for="c in tagPresetColors"
+                    :key="c"
+                    class="color-preset-dot"
+                    :class="{ 'color-preset--active': batchAddForm.color === c }"
+                    :style="{ backgroundColor: c }"
+                    @click="batchAddForm.color = c"
+                  ></span>
+                  <el-color-picker v-model="batchAddForm.color" size="small" />
+                </div>
               </el-form-item>
             </el-form>
             <template #footer>
@@ -1393,6 +1404,19 @@ const existingTags = ref([])
 const existingTagNames = computed(() => existingTags.value.map(t => t.name).filter(Boolean))
 const batchDeviceCount = computed(() => batchDeviceText.value.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean).length)
 
+const tagPresetColors = [
+  '#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399',
+  '#8E24AA', '#1E88E5', '#00897B', '#D81B60', '#FF5722',
+]
+
+function onTagSelect(val) {
+  if (!val) return
+  const matched = existingTags.value.find(t => t.name === val)
+  if (matched && matched.color) {
+    batchAddForm.value.color = matched.color
+  }
+}
+
 function parseBatchDeviceIds() {
   return batchDeviceText.value.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean)
 }
@@ -1433,7 +1457,7 @@ async function confirmBatchAddTag() {
       tag_name: batchAddForm.value.tag_name,
       color: batchAddForm.value.color,
     })
-    ElMessage.success(`成功为 ${res.device_count} 台设备添加标签「${res.tag_name}」`)
+    ElMessage.success(`成功为 ${res.imported || 0} 台设备添加标签「${batchAddForm.value.tag_name}」`)
     batchAddDialogVisible.value = false
     loadBatches()
   } catch (e) {
@@ -2163,6 +2187,31 @@ onBeforeUnmount(() => {
 
 .batch-tag-select {
   width: 100%;
+}
+
+.color-presets-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.color-preset-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.color-preset-dot:hover {
+  transform: scale(1.08);
+}
+
+.color-preset--active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent, #409EFF);
 }
 
 .traced-upload-row {

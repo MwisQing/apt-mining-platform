@@ -64,7 +64,7 @@ func (e *IOCExtractor) ExtractIOCs(text string) []IOCItem {
 	var results []IOCItem
 
 	add := func(item IOCItem) {
-		key := item.Value + ":" + item.Port
+		key := item.Type + ":" + item.Value + ":" + item.Port
 		if !seen[key] {
 			seen[key] = true
 			results = append(results, item)
@@ -157,30 +157,19 @@ func (e *IOCExtractor) ExtractIOCs(text string) []IOCItem {
 		add(IOCItem{Value: strings.ToUpper(m[1]), Port: "", Type: "device"})
 	}
 
-	// 3. 32-char hex device IDs — check context to distinguish from file hash MD5s
+	// 3. 32-char hex — always extract as md5 IOC; also as device if context supports it
 	for _, m := range md5Regex.FindAllStringSubmatchIndex(text, -1) {
 		val := text[m[2]:m[3]]
 		upperVal := strings.ToUpper(val)
-		// Skip if already extracted as a device (prefix/GUID overlap)
+		// Skip if already classified as device via prefix/GUID regex — avoid redundant md5 entry
 		if seenDevice[upperVal] {
 			continue
 		}
-		// Use context analysis: preceded by "md5"/"hash" → file hash; otherwise → device ID
+		// Always extract as md5 IOC
+		add(IOCItem{Value: upperVal, Port: "", Type: "md5"})
+		// Additionally extract as device if context suggests device ID
 		if isDeviceContext(text, m[2]) {
 			add(IOCItem{Value: upperVal, Port: "", Type: "device"})
-		}
-	}
-
-	// MD5 — only values NOT already classified as devices
-	for _, m := range md5Regex.FindAllStringSubmatchIndex(text, -1) {
-		val := text[m[2]:m[3]]
-		upperVal := strings.ToUpper(val)
-		if seenDevice[upperVal] {
-			continue
-		}
-		// Only extract as MD5 if preceded by hash-related keywords
-		if !isDeviceContext(text, m[2]) {
-			add(IOCItem{Value: upperVal, Port: "", Type: "md5"})
 		}
 	}
 
