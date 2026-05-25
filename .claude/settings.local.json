@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf \"c:/Users/Seria/Desktop/ai开发/apt-mining-platform/apt-mining-v3.3.5 修复表头筛选设备标签不显示bug/backend_v2/static/\"*)",
+      "Bash(cp -r \"c:/Users/Seria/Desktop/ai开发/apt-mining-platform/apt-mining-v3.3.5 修复表头筛选设备标签不显示bug/frontend/dist/\"* \"c:/Users/Seria/Desktop/ai开发/apt-mining-platform/apt-mining-v3.3.5 修复表头筛选设备标签不显示bug/backend_v2/static/\")",
+      "Bash(rm -rf backend_v2/static/*)",
+      "Bash(cp -r frontend/dist/* backend_v2/static/)",
+      "Bash(rm -rf dist/*)",
+      "Bash(npm run *)",
+      "Bash(git stash *)",
+      "Bash(rm -rf node_modules/.vite dist/*)",
+      "Bash(rm -rf ../backend_v2/static/*)",
+      "Bash(cp -r dist/* ../backend_v2/static/)",
+      "Read(//c/Users/Seria/Desktop/ai开发/apt-mining-platform/backend_v2/static/**)"
+    ]
+  }
+}
