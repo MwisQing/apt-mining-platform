@@ -1106,7 +1106,7 @@ async function loadData() {
   try {
     const params = {
       page: 1,
-      page_size: 99999,
+      page_size: 200000,
     }
 
     if (dateRange.value && dateRange.value.length === 2) {
