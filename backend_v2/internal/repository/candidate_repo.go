@@ -243,6 +243,7 @@ func (r *CandidateRepo) QueryCandidates(p *CandidateQueryParams) ([]CandidateRow
 	}
 
 	whereSQL, args, argIdx := BuildWhereSQL(p)
+	nWhereArgs := len(args) // save before appending traceTTL/pageSize/offset
 
 	// 排序字段白名单
 	sortField := "candidate_score"
@@ -263,19 +264,11 @@ func (r *CandidateRepo) QueryCandidates(p *CandidateQueryParams) ([]CandidateRow
 		sortOrder = "ASC"
 	}
 
-	// 主查询：使用 json_build_object 将所有列打包为 JSON，避免 database/sql 类型断言问题
+	// 主查询：直接查询 alerts 表，不做去重，每行独立评分
 	// 所有评分计算在 SQL 中完成（CASE WHEN 内联），Go 只负责反序列化
-	// Main query: deduplicate by (device_id, target, port) using ROW_NUMBER,
-	// keeping the row with highest alert_count, then latest last_alert_time.
 	query := fmt.Sprintf(`
 WITH base AS (
-    SELECT sub.* FROM (
-        SELECT a.*, ROW_NUMBER() OVER (
-            PARTITION BY a.device_id, a.target, COALESCE(a.port, '')
-            ORDER BY a.alert_count DESC, a.last_alert_time DESC, a.id DESC
-        ) AS _rn
-        FROM alerts a WHERE %s
-    ) sub WHERE sub._rn = 1
+    SELECT a.* FROM alerts a WHERE %s
 ),
 heat AS (
     SELECT
@@ -291,14 +284,23 @@ device_heat AS (
     SELECT device_id, COUNT(*) AS device_alert_count FROM base GROUP BY device_id
 ),
 events AS (
-    SELECT mei.target, COALESCE(mei.port, '') AS port, me.id AS event_id, me.event_name, me.status AS event_status, COALESCE(me.color, '') AS event_color
-    FROM mined_event_iocs mei
-    JOIN mined_events me ON me.id = mei.event_id
+    SELECT sub.target, sub.port, sub.event_id, sub.event_name, sub.event_status, sub.event_color
+    FROM (
+        SELECT mei.target, COALESCE(mei.port, '') AS port, me.id AS event_id, me.event_name, me.status AS event_status, COALESCE(me.color, '') AS event_color,
+               ROW_NUMBER() OVER (PARTITION BY UPPER(mei.target), COALESCE(mei.port, '') ORDER BY me.id) AS _rn
+        FROM mined_event_iocs mei
+        JOIN mined_events me ON me.id = mei.event_id
+    ) sub WHERE sub._rn = 1
 ),
 traced AS (
-    SELECT target, COALESCE(port, '') AS port,
-           CASE WHEN traced_at >= NOW() - make_interval(days => $%d) THEN 'active' ELSE 'expired' END AS trace_status,
-           note AS trace_note FROM traced_targets
+    SELECT sub.target, sub.port, sub.trace_status, sub.trace_note
+    FROM (
+        SELECT target, COALESCE(port, '') AS port,
+               CASE WHEN traced_at >= NOW() - make_interval(days => $%d) THEN 'active' ELSE 'expired' END AS trace_status,
+               note AS trace_note,
+               ROW_NUMBER() OVER (PARTITION BY UPPER(target), COALESCE(port, '') ORDER BY traced_at DESC) AS _rn
+        FROM traced_targets
+    ) sub WHERE sub._rn = 1
 ),
 device_tag_names AS (
     SELECT dt.device_id,
@@ -405,9 +407,9 @@ SELECT json_build_object(
     'source_ip_count', heat_source_ip_alert_count
 ) AS row_json
 FROM scored
-ORDER BY %s %s
+ORDER BY %s %s, id %s
 LIMIT $%d OFFSET $%d
-`, whereSQL, argIdx, sortField, sortOrder, argIdx+1, argIdx+2)
+`, whereSQL, argIdx, sortField, sortOrder, sortOrder, argIdx+1, argIdx+2)
 
 	args = append(args, traceTTL)
 	args = append(args, p.PageSize, (p.Page-1)*p.PageSize)
@@ -433,7 +435,7 @@ LIMIT $%d OFFSET $%d
 
 	// COUNT 查询（不需要 traceTTL 参数）
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM alerts a WHERE %s", whereSQL)
-	countArgs := args[:len(args)-3]
+	countArgs := args[:nWhereArgs] // only WHERE clause args (traceTTL/pageSize/offset not needed)
 	var total int64
 	if err := r.DB.QueryRow(countQuery, countArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count candidates: %w", err)

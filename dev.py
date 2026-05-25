@@ -71,10 +71,7 @@ def main():
     parser.add_argument("--port", type=int, default=None, help="Port number (default: from .env or 9099)")
     args = parser.parse_args()
 
-    host = args.host or "127.0.0.1"
-    port = args.port or int(os.environ.get("APT_SERVER_PORT", "9099"))
-
-    # Load .env
+    # Load .env file first so defaults are available for --port/--host
     env_file = SCRIPT_DIR / ".env"
     if env_file.exists():
         with open(env_file, encoding='utf-8') as f:
@@ -88,6 +85,9 @@ def main():
                     value = value.strip()
                     if key:
                         os.environ.setdefault(key, value)
+
+    host = args.host or "127.0.0.1"
+    port = args.port or int(os.environ.get("APT_SERVER_PORT", "9099"))
 
     auto_open = not args.no_browser and os.environ.get("APT_AUTO_OPEN_BROWSER", "1").lower() not in {"0", "false", "no"}
 

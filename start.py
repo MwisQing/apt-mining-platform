@@ -186,11 +186,7 @@ def main():
     parser.add_argument("--no-rebuild", action="store_true", help="Skip auto-rebuild even if source changed")
     args = parser.parse_args()
 
-    default_host = "127.0.0.1"
-    host = args.host or default_host
-    port = args.port or int(os.environ.get("APT_SERVER_PORT", "9099"))
-
-    # Load .env file if present
+    # Load .env file first so defaults are available for --port/--host
     env_file = SCRIPT_DIR / ".env"
     if env_file.exists():
         with open(env_file, encoding='utf-8') as f:
@@ -204,6 +200,10 @@ def main():
                     value = value.strip()
                     if key:
                         os.environ.setdefault(key, value)
+
+    default_host = "127.0.0.1"
+    host = args.host or default_host
+    port = args.port or int(os.environ.get("APT_SERVER_PORT", "9099"))
 
     auto_open = not args.no_browser and os.environ.get("APT_AUTO_OPEN_BROWSER", "1").lower() not in {"0", "false", "no"}
 
