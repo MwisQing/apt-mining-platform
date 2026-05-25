@@ -1701,12 +1701,11 @@ onUnmounted(() => {
 
 .table-scroll {
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: auto;
+  overflow: auto;
 }
 
 .table-scroll-h-bar {
-  height: 14px;
+  height: 10px;
   overflow-x: auto;
   overflow-y: hidden;
   background: var(--panel-muted);
@@ -1714,7 +1713,7 @@ onUnmounted(() => {
 }
 
 .table-scroll-h-bar::-webkit-scrollbar {
-  height: 14px;
+  height: 10px;
 }
 
 .h-scroll-spacer {
@@ -1723,6 +1722,12 @@ onUnmounted(() => {
 
 .candidates-table {
   width: 100%;
+}
+
+.candidates-table :deep(.el-table__header-wrapper) {
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .candidates-table :deep(.el-table__body-wrapper) {

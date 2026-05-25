@@ -204,11 +204,9 @@ onMounted(async () => {
 }
 
 .sidebar-toggle {
-  position: absolute;
-  top: 12px;
-  right: 8px;
-  width: 24px;
-  height: 24px;
+  align-self: flex-end;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border: none;
@@ -217,7 +215,8 @@ onMounted(async () => {
   color: var(--text-muted);
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
-  z-index: 10;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .sidebar-toggle:hover {
@@ -226,8 +225,7 @@ onMounted(async () => {
 }
 
 .app-shell--collapsed .sidebar-toggle {
-  right: 50%;
-  transform: translateX(50%);
+  align-self: center;
 }
 
 .brand-card {
@@ -442,6 +440,7 @@ onMounted(async () => {
 .main-shell {
   min-width: 0;
   height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }

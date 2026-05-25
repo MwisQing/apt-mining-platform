@@ -166,8 +166,8 @@ a {
 }
 
 ::-webkit-scrollbar {
-  width: 28px;
-  height: 28px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
