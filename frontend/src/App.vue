@@ -1,11 +1,15 @@
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'app-shell--collapsed': sidebarCollapsed }">
     <aside class="sidebar">
-      <div class="brand-card">
+      <button class="sidebar-toggle" @click="toggleSidebar" :title="sidebarCollapsed ? '展开导航' : '收拢导航'">
+        <el-icon><component :is="sidebarCollapsed ? 'DArrowRight' : 'DArrowLeft'" /></el-icon>
+      </button>
+
+      <div class="brand-card" :class="{ 'brand-card--compact': sidebarCollapsed }">
         <div class="brand-mark">
           <el-icon :size="18"><Monitor /></el-icon>
         </div>
-        <div class="brand-copy">
+        <div class="brand-copy" v-show="!sidebarCollapsed">
           <div class="brand-title">APT Mining</div>
           <div class="brand-subtitle">Workbench</div>
         </div>
@@ -23,13 +27,13 @@
           <span class="nav-item__icon">
             <el-icon><component :is="item.icon" /></el-icon>
           </span>
-          <span class="nav-item__content">
+          <span class="nav-item__content" v-show="!sidebarCollapsed">
             <span class="nav-item__label">{{ item.label }}</span>
           </span>
         </router-link>
       </div>
 
-      <div class="sidebar-footer">
+      <div class="sidebar-footer" v-show="!sidebarCollapsed">
         <div class="footer-row">
           <div class="theme-dots">
             <button
@@ -80,6 +84,8 @@ import {
   Monitor,
   Notebook,
   Setting,
+  DArrowLeft,
+  DArrowRight,
 } from '@element-plus/icons-vue'
 import { fetchVersion } from './api/version'
 
@@ -87,6 +93,12 @@ const router = useRouter()
 const route = useRoute()
 const currentTheme = ref('dark')
 const versionStr = ref('')
+const sidebarCollapsed = ref(false)
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem('apt-sidebar-collapsed', sidebarCollapsed.value ? '1' : '0')
+}
 
 const navItems = [
   { path: '/', label: '研判工作台', icon: Monitor },
@@ -151,6 +163,7 @@ function setTheme(theme) {
 onMounted(async () => {
   const savedTheme = localStorage.getItem('apt-workbench-theme') || 'dark'
   setTheme(savedTheme)
+  sidebarCollapsed.value = localStorage.getItem('apt-sidebar-collapsed') === '1'
   try {
     const ver = await fetchVersion()
     versionStr.value = ver.version || ''
@@ -163,7 +176,12 @@ onMounted(async () => {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
+  transition: grid-template-columns 0.3s ease;
   background: var(--bg-primary);
+}
+
+.app-shell--collapsed {
+  grid-template-columns: 64px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -177,6 +195,39 @@ onMounted(async () => {
   padding: 20px 14px 14px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-strong);
+  transition: padding 0.3s ease;
+}
+
+.app-shell--collapsed .sidebar {
+  padding: 12px 8px 14px;
+  overflow-x: hidden;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 12px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  z-index: 10;
+}
+
+.sidebar-toggle:hover {
+  background: var(--sidebar-active);
+  color: var(--text-primary);
+}
+
+.app-shell--collapsed .sidebar-toggle {
+  right: 50%;
+  transform: translateX(50%);
 }
 
 .brand-card {
@@ -188,6 +239,12 @@ onMounted(async () => {
   background: transparent;
   border: none;
   box-shadow: none;
+  transition: padding 0.3s ease, gap 0.3s ease;
+}
+
+.brand-card--compact {
+  padding: 6px 0;
+  justify-content: center;
 }
 
 .brand-mark {
@@ -247,6 +304,18 @@ onMounted(async () => {
     background-color 0.15s ease,
     border-color 0.15s ease,
     color 0.15s ease;
+}
+
+.app-shell--collapsed .nav-item {
+  justify-content: center;
+  padding: 10px 4px;
+  border-left: none;
+  border-radius: 8px;
+}
+
+.app-shell--collapsed .nav-item--active {
+  border-left: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .nav-item:hover {
@@ -373,7 +442,6 @@ onMounted(async () => {
 .main-shell {
   min-width: 0;
   height: 100vh;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
@@ -414,13 +482,18 @@ onMounted(async () => {
 .content-pane {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 0 28px 28px;
-  overflow: auto;
 }
 
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
+  }
+
+  .sidebar-toggle {
+    display: none;
   }
 
   .sidebar {
