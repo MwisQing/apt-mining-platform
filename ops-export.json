@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "tables": {
+    "mined_events": [
+      {
+        "id": 1,
+        "event_name": "刷新事件",
+        "color": "#409EFF",
+        "status": "open",
+        "mined_at": "2026-05-14T00:00:00",
+        "note": "event note"
+      }
+    ],
+    "mined_event_devices": [],
+    "mined_event_iocs": [
+      {
+        "event_id": 1,
+        "target": "refresh.example.com",
+        "port": "443"
+      }
+    ],
+    "event_followups": [],
+    "traced_targets": [
+      {
+        "id": 1,
+        "target": "a.example.com",
+        "port": "443",
+        "traced_at": "2026-05-18T13:09:25.001781",
+        "note": "one"
+      },
+      {
+        "id": 2,
+        "target": "b.example.com",
+        "port": "443",
+        "traced_at": "2026-05-18T13:09:25.005494",
+        "note": "two"
+      }
+    ],
+    "tags": [
+      {
+        "id": 1,
+        "name": "重点设备",
+        "color": "#F56C6C",
+        "is_permanent": 1,
+        "batch_id": null,
+        "created_at": "2026-05-14T00:00:00",
+        "note": null
+      }
+    ],
+    "tag_batches": [],
+    "device_tags": [
+      {
+        "device_id": "DEV-REFRESH",
+        "tag_id": 1,
+        "created_at": "2026-05-14T00:00:00"
+      }
+    ],
+    "imports": [],
+    "import_sheets": []
+  }
+}

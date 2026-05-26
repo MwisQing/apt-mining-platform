@@ -141,11 +141,7 @@
         </div>
       </div>
 
-      <div class="table-scroll-h-bar" ref="hBarRef" @scroll="onHBarScroll">
-        <div class="h-scroll-spacer" :style="{ width: hScrollWidth + 'px' }"></div>
-      </div>
-
-      <div class="table-scroll" ref="tableScrollRef" @scroll="onTableScroll">
+      <div class="table-scroll">
         <el-table
           ref="tableRef"
           :data="displayData"
@@ -838,7 +834,7 @@
 </template>
 
 <script setup>
-import { computed, h, onMounted, onUnmounted, reactive, ref, shallowRef, watch, nextTick } from 'vue'
+import { computed, h, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { CaretTop, CaretBottom, Filter, Operation, RefreshRight, Search, StarFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { fetchCandidates } from '../api/candidates'
@@ -871,43 +867,6 @@ function handleSaveColumnSettings() {
 function handleResetColumnSettings() {
   resetColumns()
   ElMessage.success('已恢复为默认列设置')
-}
-
-// Horizontal scroll sync
-const hBarRef = ref(null)
-const tableScrollRef = ref(null)
-const hScrollWidth = ref(0)
-let hScrollSyncing = false
-let resizeObserver = null
-
-function onHBarScroll() {
-  if (!hScrollSyncing && tableScrollRef.value) {
-    hScrollSyncing = true
-    tableScrollRef.value.scrollLeft = hBarRef.value.scrollLeft
-    hScrollSyncing = false
-  }
-}
-
-function onTableScroll() {
-  if (!hScrollSyncing && hBarRef.value) {
-    hScrollSyncing = true
-    hBarRef.value.scrollLeft = tableScrollRef.value.scrollLeft
-    hScrollSyncing = false
-  }
-}
-
-function updateHScrollWidth() {
-  const el = tableScrollRef.value
-  if (!el) return
-  const body = el.querySelector('.el-table__body-wrapper')
-  if (body) {
-    hScrollWidth.value = Math.ceil(body.scrollWidth)
-  }
-}
-
-async function refreshHScroll() {
-  await nextTick()
-  updateHScrollWidth()
 }
 
 function hasMultipleSourceIps(row) {
@@ -1172,8 +1131,6 @@ async function loadData() {
     }
     allTableData.value = items
     tableData.value = items
-
-    refreshHScroll()
 
     // Sync pending filter states with applied states
     for (const key of FILTERABLE_COLUMNS) {
@@ -1440,30 +1397,15 @@ onMounted(async () => {
   await loadConfig()
   await loadTagOptions()
   loadData()
-
-  resizeObserver = new ResizeObserver(() => {
-    refreshHScroll()
-  })
-  // Observe the table scroll container for content size changes
-  nextTick(() => {
-    if (tableScrollRef.value) {
-      resizeObserver.observe(tableScrollRef.value)
-    }
-  })
-})
-
-onUnmounted(() => {
-  resizeObserver?.disconnect()
 })
 </script>
 
 <style scoped>
 .workbench {
   height: 100%;
-  display: grid;
-  grid-template-rows: auto 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
-  min-height: 0;
 }
 
 .filter-bar {
@@ -1545,6 +1487,7 @@ onUnmounted(() => {
 }
 
 .table-card {
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1700,34 +1643,13 @@ onUnmounted(() => {
 }
 
 .table-scroll {
+  flex: 1;
   min-height: 0;
   overflow: auto;
 }
 
-.table-scroll-h-bar {
-  height: 10px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  background: var(--panel-muted);
-  border-radius: 4px;
-}
-
-.table-scroll-h-bar::-webkit-scrollbar {
-  height: 10px;
-}
-
-.h-scroll-spacer {
-  height: 1px;
-}
-
 .candidates-table {
   width: 100%;
-}
-
-.candidates-table :deep(.el-table__header-wrapper) {
-  position: sticky;
-  top: 0;
-  z-index: 10;
 }
 
 .candidates-table :deep(.el-table__body-wrapper) {
