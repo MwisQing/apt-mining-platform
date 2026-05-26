@@ -9,7 +9,7 @@
           <div class="brand-title">APT Mining</div>
           <div class="brand-subtitle">Workbench</div>
         </div>
-        <button class="collapse-btn" @click="toggleSidebar" title="Toggle sidebar">
+        <button class="collapse-btn" @click="toggleSidebar" aria-label="Toggle sidebar" title="Toggle sidebar">
           <el-icon :size="14"><ArrowLeft /></el-icon>
         </button>
       </div>
@@ -248,6 +248,11 @@ onMounted(async () => {
 .collapse-btn:hover {
   background: var(--sidebar-active);
   color: var(--text-primary);
+}
+
+.collapse-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .nav-section {
