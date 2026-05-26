@@ -12,7 +12,7 @@
 - 修复：`candidate_repo.go` traced CTE JOIN — `UPPER(tr.target) = UPPER(a.target)` 大小写归一化 + `tr.port IN ('', ...)` 空端口通配
 - 修复：`candidate_repo.go` HideTraced WHERE — `UPPER(tt.target) = UPPER(a.target)` 大小写归一化
 - 修复：`candidate_repo.go` HideClosed WHERE — `UPPER(mei.target) = UPPER(a.target)` 大小写归一化
-- 修复：`event_repo.go` CreateEventTx / AddIOCs — 插入 IOC 时 `strings.ToLower(target)` 存储归一化
+- 修复：`event_repo.go` CreateEventTx / AddIOCs — 插入 IOC 时 `strings.ToLower(target)` 存储归一化 
 
 ---
 
