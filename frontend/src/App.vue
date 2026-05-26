@@ -86,7 +86,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import {
   ArrowLeft,
   ArrowRight,
@@ -98,7 +98,6 @@ import {
 } from '@element-plus/icons-vue'
 import { fetchVersion } from './api/version'
 
-const router = useRouter()
 const route = useRoute()
 const currentTheme = ref('dark')
 const versionStr = ref('')
@@ -156,11 +155,6 @@ const hasTopbarCopy = computed(() => {
   if (TOPBAR_HIDDEN_ROUTES.has(route.path)) return false
   return Boolean(currentPage.value.kicker || currentPage.value.title || currentPage.value.subtitle)
 })
-function navigate(path) {
-  if (route.path !== path) {
-    router.push(path)
-  }
-}
 
 function setTheme(theme) {
   currentTheme.value = theme
