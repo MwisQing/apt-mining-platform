@@ -1,17 +1,15 @@
 <template>
   <div class="workbench">
-    <section class="filter-bar" :class="{ 'is-collapsed': filterCollapsed }">
+    <section class="filter-bar">
       <div class="filter-bar__intro">
         <div>
           <div class="filter-bar__title">筛选条件</div>
           <div class="filter-bar__hint">按日期、目标类型和关键字缩小候选范围。</div>
         </div>
-        <div class="filter-bar__actions">
-          <el-button size="small" @click="loadData">
-            <el-icon><RefreshRight /></el-icon>
-            刷新
-          </el-button>
-        </div>
+        <el-button size="small" @click="loadData">
+          <el-icon><RefreshRight /></el-icon>
+          刷新
+        </el-button>
       </div>
 
       <div class="filter-row">
@@ -129,12 +127,6 @@
         </el-popover>
       </div>
 
-      <!-- Collapse toggle button — always visible at the right edge -->
-      <button class="filter-collapse-btn" @click="toggleFilter" :title="filterCollapsed ? '展开筛选条件' : '收起筛选条件'">
-        <el-icon class="chevron" :class="{ 'is-collapsed': filterCollapsed }">
-          <ArrowUpBold />
-        </el-icon>
-      </button>
     </section>
 
     <section class="table-card">
@@ -843,7 +835,7 @@
 
 <script setup>
 import { computed, h, onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import { ArrowUpBold, CaretTop, CaretBottom, Filter, Operation, RefreshRight, Search, StarFilled } from '@element-plus/icons-vue'
+import { CaretTop, CaretBottom, Filter, Operation, RefreshRight, Search, StarFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { fetchCandidates } from '../api/candidates'
 import { fetchConfig } from '../api/config'
@@ -852,13 +844,6 @@ import { addDeviceTag, fetchTags, removeDeviceTag } from '../api/tags'
 import { createEvent } from '../api/events'
 
 const { columns, allColumns, toggleColumn, persistColumns, resetColumns, hasPendingChanges, onResizeStart } = useColumnConfig()
-
-// Filter bar collapse/expand state
-const filterCollapsed = ref(false)
-
-function toggleFilter() {
-  filterCollapsed.value = !filterCollapsed.value
-}
 
 function colVisible(key) {
   return columns.value.find((c) => c.key === key)?.visible !== false
@@ -1429,23 +1414,6 @@ onMounted(async () => {
   border-radius: 10px;
   border: 1px solid var(--border-color);
   box-shadow: var(--shadow-card);
-  position: relative;
-  transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              padding 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-              opacity 0.25s ease,
-              margin-bottom 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  max-height: 600px;
-  overflow: hidden;
-}
-
-.filter-bar.is-collapsed {
-  max-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  margin-bottom: 0;
-  border-width: 0;
-  opacity: 0;
-  box-shadow: none;
 }
 
 .filter-bar__intro {
@@ -1454,53 +1422,6 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 14px;
-}
-
-.filter-bar__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* Collapse toggle button */
-.filter-collapse-btn {
-  position: absolute;
-  right: -16px;
-  bottom: -16px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 1px solid var(--border-color);
-  background: var(--panel-strong);
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  z-index: 10;
-}
-
-.filter-collapse-btn:hover {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-  transform: scale(1.1);
-  box-shadow: 0 4px 12px rgba(91, 169, 255, 0.25);
-}
-
-.filter-collapse-btn:active {
-  transform: scale(0.95);
-}
-
-.filter-collapse-btn .chevron {
-  font-size: 16px;
-  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.filter-collapse-btn .chevron.is-collapsed {
-  transform: rotate(180deg);
 }
 
 .filter-bar__title {
