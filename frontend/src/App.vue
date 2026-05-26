@@ -177,7 +177,7 @@ onMounted(async () => {
 }
 
 .app-shell--collapsed {
-  grid-template-columns: 64px minmax(0, 1fr) !important;
+  grid-template-columns: 64px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -365,9 +365,6 @@ onMounted(async () => {
   padding: 10px 0;
 }
 
-.sidebar--collapsed .nav-item__icon {
-  margin: 0;
-}
 
 .sidebar-footer {
   position: relative;
@@ -493,7 +490,8 @@ onMounted(async () => {
 }
 
 @media (max-width: 1120px) {
-  .app-shell {
+  .app-shell,
+  .app-shell--collapsed {
     grid-template-columns: 1fr;
   }
 
