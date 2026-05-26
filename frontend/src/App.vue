@@ -9,6 +9,9 @@
           <div class="brand-title">APT Mining</div>
           <div class="brand-subtitle">Workbench</div>
         </div>
+        <button class="collapse-btn" @click="toggleSidebar" title="Toggle sidebar">
+          <el-icon :size="14"><ArrowLeft /></el-icon>
+        </button>
       </div>
 
       <div class="nav-section">
@@ -80,6 +83,7 @@ import {
   Monitor,
   Notebook,
   Setting,
+  ArrowLeft,
 } from '@element-plus/icons-vue'
 import { fetchVersion } from './api/version'
 
@@ -87,6 +91,11 @@ const router = useRouter()
 const route = useRoute()
 const currentTheme = ref('dark')
 const versionStr = ref('')
+const isCollapsed = ref(localStorage.getItem('sidebar-collapsed') === 'true')
+function toggleSidebar() {
+  isCollapsed.value = !isCollapsed.value
+  localStorage.setItem('sidebar-collapsed', isCollapsed.value)
+}
 
 const navItems = [
   { path: '/', label: '研判工作台', icon: Monitor },
@@ -219,6 +228,26 @@ onMounted(async () => {
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.3;
+}
+
+.collapse-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.collapse-btn:hover {
+  background: var(--sidebar-active);
+  color: var(--text-primary);
 }
 
 .nav-section {
