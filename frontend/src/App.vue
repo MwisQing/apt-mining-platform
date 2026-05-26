@@ -1,6 +1,6 @@
 <template>
-  <div class="app-shell">
-    <aside class="sidebar">
+  <div class="app-shell" :class="{ 'app-shell--collapsed': isCollapsed }">
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': isCollapsed }">
       <div class="brand-card">
         <div class="brand-mark">
           <el-icon :size="18"><Monitor /></el-icon>
@@ -173,6 +173,11 @@ onMounted(async () => {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   background: var(--bg-primary);
+  transition: grid-template-columns 0.25s ease;
+}
+
+.app-shell--collapsed {
+  grid-template-columns: 64px minmax(0, 1fr) !important;
 }
 
 .sidebar {
@@ -186,6 +191,25 @@ onMounted(async () => {
   padding: 20px 14px 14px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-strong);
+  transition: padding 0.25s ease;
+}
+
+.sidebar--collapsed {
+  padding: 20px 8px 8px;
+}
+
+.sidebar--collapsed .brand-copy {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-width 0.25s ease;
+}
+
+.sidebar--collapsed .sidebar-footer {
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-height 0.25s ease;
 }
 
 .brand-card {
@@ -327,6 +351,22 @@ onMounted(async () => {
   font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
+}
+
+.sidebar--collapsed .nav-item__content {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-width 0.25s ease;
+}
+
+.sidebar--collapsed .nav-item {
+  justify-content: center;
+  padding: 10px 0;
+}
+
+.sidebar--collapsed .nav-item__icon {
+  margin: 0;
 }
 
 .sidebar-footer {
