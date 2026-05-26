@@ -10,26 +10,36 @@
           <div class="brand-subtitle">Workbench</div>
         </div>
         <button class="collapse-btn" @click="toggleSidebar" aria-label="Toggle sidebar" title="Toggle sidebar">
-          <el-icon :size="14"><ArrowLeft /></el-icon>
+          <el-icon :size="14">
+            <ArrowLeft v-if="!isCollapsed" />
+            <ArrowRight v-else />
+          </el-icon>
         </button>
       </div>
 
       <div class="nav-section">
-        <router-link
+        <el-tooltip
           v-for="item in navItems"
           :key="item.path"
-          :to="item.path"
-          class="nav-item"
-          :class="{ 'nav-item--active': route.path === item.path }"
-          active-class="nav-item--active"
+          :content="item.label"
+          :disabled="!isCollapsed"
+          placement="right"
+          :show-after="200"
         >
-          <span class="nav-item__icon">
-            <el-icon><component :is="item.icon" /></el-icon>
-          </span>
-          <span class="nav-item__content">
-            <span class="nav-item__label">{{ item.label }}</span>
-          </span>
-        </router-link>
+          <router-link
+            :to="item.path"
+            class="nav-item"
+            :class="{ 'nav-item--active': route.path === item.path }"
+            active-class="nav-item--active"
+          >
+            <span class="nav-item__icon">
+              <el-icon><component :is="item.icon" /></el-icon>
+            </span>
+            <span class="nav-item__content">
+              <span class="nav-item__label">{{ item.label }}</span>
+            </span>
+          </router-link>
+        </el-tooltip>
       </div>
 
       <div class="sidebar-footer">
@@ -78,12 +88,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  ArrowLeft,
+  ArrowRight,
   FolderOpened,
   List,
   Monitor,
   Notebook,
   Setting,
-  ArrowLeft,
 } from '@element-plus/icons-vue'
 import { fetchVersion } from './api/version'
 
@@ -213,6 +224,7 @@ onMounted(async () => {
 }
 
 .brand-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -360,9 +372,40 @@ onMounted(async () => {
   transition: opacity 0.15s ease, max-width 0.25s ease;
 }
 
-.sidebar--collapsed .nav-item {
+.sidebar--collapsed .brand-card {
   justify-content: center;
-  padding: 10px 0;
+  padding: 8px 4px;
+}
+
+.sidebar--collapsed .collapse-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.sidebar--collapsed .brand-mark {
+  margin: 0 auto;
+}
+
+.sidebar--collapsed .nav-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar--collapsed .nav-item {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-left: 3px solid transparent;
+  padding: 0;
+}
+
+.sidebar--collapsed .nav-item--active {
+  border-left-color: var(--accent);
 }
 
 
