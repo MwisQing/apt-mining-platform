@@ -24,6 +24,30 @@ type ImportService struct {
 	queueMu   sync.Mutex
 }
 
+type importProgress struct {
+	inserted int
+	skipped  int
+	failed   int
+	raw      int
+	total    int
+}
+
+func (p importProgress) processedRows() int {
+	return p.inserted + p.skipped + p.failed + p.raw
+}
+
+func finalImportStatus(p importProgress) string {
+	issueRows := p.failed + p.raw
+	goodRows := p.inserted + p.skipped
+	if goodRows > 0 && issueRows == 0 {
+		return "success"
+	}
+	if goodRows > 0 && issueRows > 0 {
+		return "partial"
+	}
+	return "failed"
+}
+
 func NewImportService(db *sql.DB, uploadDir string) *ImportService {
 	svc := &ImportService{
 		DB:        db,
@@ -44,7 +68,7 @@ func (s *ImportService) queueWorker() {
 			continue
 		}
 		// 更新状态为 processing
-		s.DB.Exec("UPDATE imports SET status = 'processing' WHERE id = $1", id)
+		s.DB.Exec("UPDATE imports SET status = 'processing', queue_position = NULL, log = $2 WHERE id = $1", id, "processing")
 		s.processImport(id, filename)
 	}
 }
@@ -88,9 +112,9 @@ func (s *ImportService) CreateImport(filename string, fileHash string) (map[stri
 	s.queue <- id
 
 	return map[string]interface{}{
-		"id":          id,
-		"source_file": filename,
-		"status":      "queued",
+		"id":             id,
+		"source_file":    filename,
+		"status":         "queued",
 		"queue_position": qp,
 	}, nil
 }
@@ -102,21 +126,18 @@ func (s *ImportService) processImport(id int, filename string) {
 	// 使用 excelize 流式读取（OpenReader + Rows 迭代器）
 	f, err := excelize.OpenFile(filePath)
 	if err != nil {
-		s.updateImportStatus(id, "failed", 0, 0, 0, 0, 0, fmt.Sprintf("open excel: %v", err))
+		s.updateImportStatus(id, "failed", importProgress{}, fmt.Sprintf("open excel: %v", err))
 		return
 	}
 	defer f.Close()
 
 	sheets := f.GetSheetList()
 	if len(sheets) == 0 {
-		s.updateImportStatus(id, "failed", 0, 0, 0, 0, 0, "no sheets found")
+		s.updateImportStatus(id, "failed", importProgress{}, "no sheets found")
 		return
 	}
 
-	totalInserted := 0
-	totalSkipped := 0
-	totalFailed := 0
-	totalRows := 0
+	progress := importProgress{}
 
 	for sheetIdx, sheetName := range sheets {
 		// 使用 Rows 迭代器流式读取，避免 GetRows 全量加载到内存
@@ -148,123 +169,112 @@ func (s *ImportService) processImport(id int, filename string) {
 			id, sheetName, sheetIdx, 1, 0, "processing", time.Now(),
 		).Scan(&sheetID)
 
-		// 批量插入（SELECT WHERE NOT EXISTS 不依赖唯一索引，适用于非 DBA 环境）
-		tx, _ := s.DB.Begin()
-		stmt, err := tx.Prepare(`
-			INSERT INTO alerts (
-				device_id, first_alert_time, last_alert_time, source_ip, target,
-				target_type, port, threat_type, threat_level, std_apt_org, apt_org,
-				apt_org_tier, alert_count, vendors, protocol, intel_tags, dns_resolved_ip,
-				down_traffic, up_traffic, asset_type, source_file, imported_at,
-				analysis_status, is_focused, import_id, import_sheet_id, excel_row_number,
-				sheet_name, content_hash, unique_hash
-			)
-			SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
-			WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE content_hash = $29)
-		`)
+		// 批量插入（UNNEST 多数组并行展开，每 200 行攒一批）
+		tx, stmt, err := beginImportBatch(s.DB)
 		if err != nil {
-			tx.Rollback()
 			rows.Close()
-			s.updateImportStatus(id, "failed", 0, 0, 0, 0, 0, fmt.Sprintf("prepare stmt: %v", err))
+			s.updateImportStatus(id, "failed", progress, fmt.Sprintf("prepare stmt: %v", err))
 			return
 		}
 
-		batchCount := 0
+		batchRows := 0
+		sheetRows := 0
+		sheetRaw := 0
+		sheetFailed := 0
 		rowNum := 1
+		var batch []batchEntry
+
+		failBatch := func(message string) {
+			stmt.Close()
+			tx.Rollback()
+			s.updateImportStatus(id, "failed", progress, message)
+		}
+
+		commitBatch := func(final bool) bool {
+			res, err := s.flushBatch(s.DB, tx, batch, id, sheetID, filename, sheetName)
+			if err != nil {
+				stmt.Close()
+				tx.Rollback()
+				s.updateImportStatus(id, "failed", progress, fmt.Sprintf("flush batch: %v", err))
+				return false
+			}
+			progress.inserted += res.inserted
+			progress.skipped += res.skipped
+			progress.failed += res.failed
+			sheetFailed += res.failed
+			batch = nil
+			stmt.Close()
+			if err := tx.Commit(); err != nil {
+				s.updateImportStatus(id, "failed", progress, fmt.Sprintf("commit batch: %v", err))
+				return false
+			}
+			s.DB.Exec("UPDATE import_sheets SET parsed_rows = $1, raw_rows = $2, failed_rows = $3, status = 'processing' WHERE id = $4", sheetRows-sheetRaw-sheetFailed, sheetRaw, sheetFailed, sheetID)
+			s.updateImportProgress(id, progress, fmt.Sprintf("processing: %d rows", progress.processedRows()))
+			batchRows = 0
+			if final {
+				return true
+			}
+			tx, stmt, err = beginImportBatch(s.DB)
+			if err != nil {
+				s.updateImportStatus(id, "failed", progress, fmt.Sprintf("prepare stmt: %v", err))
+				return false
+			}
+			return true
+		}
+
 		for rows.Next() {
 			row, err := rows.Columns()
 			if err != nil {
 				continue
 			}
 			rowNum++
-			totalRows++
+			progress.total++
+			sheetRows++
 
 			vals := extractRow(row, headerMap)
-			if vals.DeviceID == "" {
-				totalFailed++
+			rawJSON := marshalImportRow(vals)
+			if missing := missingRequiredFields(vals); missing != "" {
+				if err := writeRawOnlyRow(tx, id, sheetID, filename, rowNum, sheetName, missing, rawJSON); err != nil {
+					failBatch(fmt.Sprintf("write import row: %v", err))
+					rows.Close()
+					return
+				}
+				progress.raw++
+				sheetRaw++
 				continue
 			}
 
-			result, err := stmt.Exec(
-				vals.DeviceID, vals.FirstAlertTime, vals.LastAlertTime,
-				vals.SourceIP, vals.Target, vals.TargetType, vals.Port,
-				vals.ThreatType, vals.ThreatLevel, vals.StdAptOrg, vals.AptOrg,
-				vals.AptOrgTier, vals.AlertCount, vals.Vendors, vals.Protocol,
-				vals.IntelTags, vals.DNSResolvedIP,
-				nil, nil,
-				vals.AssetType, filename, time.Now(),
-				vals.AnalysisStatus, vals.IsFocused, id, sheetID, rowNum, sheetName,
-				vals.ContentHash, vals.UniqueHash,
-			)
-			if err != nil {
-				totalFailed++
-				rawJSON, _ := json.Marshal(map[string]interface{}{
-					"device_id": vals.DeviceID, "source_ip": vals.SourceIP,
-					"target": vals.Target, "port": vals.Port, "threat_type": vals.ThreatType,
-				})
-				s.DB.Exec(
-					"INSERT INTO import_rows (import_id, import_sheet_id, excel_row_number, sheet_name, parse_status, parse_error, raw_json) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-					id, sheetID, rowNum, sheetName, "failed", err.Error(), string(rawJSON),
-				)
-				continue
-			}
-			affected, _ := result.RowsAffected()
-			var alertID int64
-			if affected > 0 {
-				totalInserted++
-				batchCount++
-				s.DB.QueryRow("SELECT id FROM alerts WHERE content_hash = $1 AND import_id = $2 ORDER BY id DESC LIMIT 1", vals.ContentHash, id).Scan(&alertID)
-				rawJSON, _ := json.Marshal(map[string]interface{}{
-					"device_id": vals.DeviceID, "source_ip": vals.SourceIP,
-					"target": vals.Target, "port": vals.Port, "threat_type": vals.ThreatType,
-					"threat_level": vals.ThreatLevel, "apt_org": vals.AptOrg,
-					"std_apt_org": vals.StdAptOrg, "alert_count": vals.AlertCount,
-				})
-				s.DB.Exec(
-					"INSERT INTO import_rows (import_id, import_sheet_id, excel_row_number, sheet_name, parse_status, raw_json, alert_id) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-					id, sheetID, rowNum, sheetName, "parsed", string(rawJSON), alertID,
-				)
-			} else {
-				totalSkipped++
-				rawJSON, _ := json.Marshal(map[string]interface{}{
-					"device_id": vals.DeviceID, "source_ip": vals.SourceIP,
-					"target": vals.Target, "port": vals.Port, "threat_type": vals.ThreatType,
-				})
-				s.DB.Exec(
-					"INSERT INTO import_rows (import_id, import_sheet_id, excel_row_number, sheet_name, parse_status, raw_json) VALUES ($1,$2,$3,$4,$5,$6)",
-					id, sheetID, rowNum, sheetName, "skipped_duplicate", string(rawJSON),
-				)
-			}
+			batch = append(batch, batchEntry{
+				DeviceID: vals.DeviceID, FirstAlertTime: vals.FirstAlertTime,
+				LastAlertTime: vals.LastAlertTime, SourceIP: vals.SourceIP,
+				Target: vals.Target, TargetType: vals.TargetType, Port: vals.Port,
+				ThreatType: vals.ThreatType, ThreatLevel: vals.ThreatLevel,
+				StdAptOrg: vals.StdAptOrg, AptOrg: vals.AptOrg,
+				AptOrgTier: vals.AptOrgTier, AlertCount: vals.AlertCount,
+				Vendors: vals.Vendors, Protocol: vals.Protocol,
+				IntelTags: vals.IntelTags, DNSResolvedIP: vals.DNSResolvedIP,
+				AssetType: vals.AssetType, AnalysisStatus: vals.AnalysisStatus,
+				IsFocused: vals.IsFocused, ContentHash: vals.ContentHash,
+				UniqueHash: vals.UniqueHash, RowNum: rowNum,
+			})
+			batchRows++
 
-			// 每 500 行 commit 一次
-			if batchCount >= 500 {
-				tx.Commit()
-				s.DB.Exec("UPDATE import_sheets SET parsed_rows = $1, status = 'processing' WHERE id = $2", totalRows, sheetID)
-				tx, _ = s.DB.Begin()
-				stmt, _ = tx.Prepare(`
-					INSERT INTO alerts (
-						device_id, first_alert_time, last_alert_time, source_ip, target,
-						target_type, port, threat_type, threat_level, std_apt_org, apt_org,
-						apt_org_tier, alert_count, vendors, protocol, intel_tags, dns_resolved_ip,
-						down_traffic, up_traffic, asset_type, source_file, imported_at,
-						analysis_status, is_focused, import_id, import_sheet_id, excel_row_number,
-						sheet_name, content_hash, unique_hash
-					)
-					SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
-					WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE content_hash = $29)
-				`)
-				batchCount = 0
+			if batchRows >= 200 && !commitBatch(false) {
+				rows.Close()
+				return
 			}
 		}
 		rows.Close()
-		tx.Commit()
-		stmt.Close()
+		// 最终 commit：刷新剩余 batch
+		if !commitBatch(true) {
+			return
+		}
 
-		s.DB.Exec("UPDATE import_sheets SET status = 'completed', parsed_rows = $1, row_count = $2 WHERE id = $3", totalRows, totalRows, sheetID)
+		s.DB.Exec("UPDATE import_sheets SET status = 'completed', parsed_rows = $1, row_count = $2, raw_rows = $3, failed_rows = $4 WHERE id = $5", sheetRows-sheetRaw-sheetFailed, sheetRows, sheetRaw, sheetFailed, sheetID)
 	}
 
-	log := fmt.Sprintf("导入完成: 成功 %d, 跳过 %d, 失败 %d", totalInserted, totalSkipped, totalFailed)
-	s.updateImportStatus(id, "completed", totalInserted, totalSkipped, totalFailed, totalRows, totalRows, log)
+	log := fmt.Sprintf("导入完成: 成功 %d, 跳过 %d, 缺字段 %d, 失败 %d", progress.inserted, progress.skipped, progress.raw, progress.failed)
+	s.updateImportStatus(id, finalImportStatus(progress), progress, log)
 }
 
 type alertRow struct {
@@ -343,10 +353,355 @@ func computeContentHash(v *alertRow) string {
 	return hex.EncodeToString(h[:])
 }
 
-func (s *ImportService) updateImportStatus(id int, status string, inserted, skipped, failed, total, parsed int, log string) {
+// batchEntry 累积用于批量 INSERT
+type batchEntry struct {
+	DeviceID, FirstAlertTime, LastAlertTime string
+	SourceIP, Target, TargetType, Port      string
+	ThreatType, ThreatLevel, StdAptOrg      string
+	AptOrg, AptOrgTier, Vendors, Protocol   string
+	IntelTags, DNSResolvedIP, AssetType     string
+	AnalysisStatus                          string
+	IsFocused                               int
+	AlertCount                              int
+	ContentHash, UniqueHash                 string
+	RowNum                                  int
+}
+
+type flushResult struct {
+	inserted, skipped, failed int
+}
+
+func (s *ImportService) flushBatch(db *sql.DB, tx *sql.Tx, batch []batchEntry, id, sheetID int, filename, sheetName string) (flushResult, error) {
+	var res flushResult
+	if len(batch) == 0 {
+		return res, nil
+	}
+
+	// 批量 INSERT alerts (UNNEST 多数组并行展开)
+	// 去重：先过滤掉已存在的 content_hash
+	existingHashes := map[string]bool{}
+	idRows, _ := tx.Query(
+		"SELECT content_hash FROM alerts WHERE content_hash = ANY($1::text[])",
+		pqArray(batchStrings(batch, "ContentHash")),
+	)
+	if idRows != nil {
+		defer idRows.Close()
+		for idRows.Next() {
+			var h string
+			idRows.Scan(&h)
+			existingHashes[h] = true
+		}
+	}
+
+	deduped := make([]batchEntry, 0, len(batch))
+	for _, e := range batch {
+		if !existingHashes[e.ContentHash] {
+			deduped = append(deduped, e)
+		}
+	}
+	if len(deduped) == 0 {
+		res.skipped = len(batch)
+		return res, nil
+	}
+
+	_, err := tx.Exec(`
+		INSERT INTO alerts (
+			device_id, first_alert_time, last_alert_time, source_ip, target,
+			target_type, port, threat_type, threat_level, std_apt_org, apt_org,
+			apt_org_tier, alert_count, vendors, protocol, intel_tags, dns_resolved_ip,
+			down_traffic, up_traffic, asset_type, source_file, imported_at,
+			analysis_status, is_focused, import_id, import_sheet_id, excel_row_number,
+			sheet_name, content_hash, unique_hash
+		)
+		SELECT unnest($1::text[]), unnest($2::text[])::timestamp, unnest($3::text[])::timestamp,
+			unnest($4::text[]), unnest($5::text[]), unnest($6::text[]),
+			unnest($7::text[]), unnest($8::text[]), unnest($9::text[]),
+			unnest($10::text[]), unnest($11::text[]), unnest($12::text[]),
+			unnest($13::int[]), unnest($14::text[]), unnest($15::text[]),
+			unnest($16::text[]), unnest($17::text[]),
+			NULL, NULL,
+			unnest($18::text[]), $19::text, NOW(),
+			unnest($20::text[]), unnest($21::int[]), $22::int, $23::int,
+			unnest($24::int[]),
+			$25, unnest($26::text[]), unnest($27::text[])
+	`,
+		pqArray(batchDeviceIDs(deduped)), pqArray(batchTimes(deduped, true)), pqArray(batchTimes(deduped, false)),
+		pqArray(batchStrings(deduped, "SourceIP")), pqArray(batchStrings(deduped, "Target")),
+		pqArray(batchStrings(deduped, "TargetType")), pqArray(batchStrings(deduped, "Port")),
+		pqArray(batchStrings(deduped, "ThreatType")), pqArray(batchStrings(deduped, "ThreatLevel")),
+		pqArray(batchStrings(deduped, "StdAptOrg")), pqArray(batchStrings(deduped, "AptOrg")),
+		pqArray(batchStrings(deduped, "AptOrgTier")), pqIntArray(batchAlertCounts(deduped)),
+		pqArray(batchStrings(deduped, "Vendors")), pqArray(batchStrings(deduped, "Protocol")),
+		pqArray(batchStrings(deduped, "IntelTags")), pqArray(batchStrings(deduped, "DNSResolvedIP")),
+		pqArray(batchStrings(deduped, "AssetType")), filename,
+		pqArray(batchStrings(deduped, "AnalysisStatus")), pqIntArray(batchIsFocused(deduped)),
+		id, sheetID,
+		pqIntArray(batchRowNums(deduped)),
+		sheetName,
+		pqArray(batchStrings(deduped, "ContentHash")), pqArray(batchStrings(deduped, "UniqueHash")),
+	)
+	if err != nil {
+		tx.Rollback()
+		return res, fmt.Errorf("batch insert: %w", err)
+	}
+
+	// 批量取回新插入的 alert ID
+	idRows2, _ := tx.Query(`
+		SELECT a.id, a.content_hash
+		FROM alerts a
+		JOIN unnest($1::text[]) AS b(content_hash) ON a.content_hash = b.content_hash
+		WHERE a.import_id = $2
+		ORDER BY a.id DESC
+	`, pqArray(batchStrings(deduped, "ContentHash")), id)
+	idMap := map[string]int64{}
+	if idRows2 != nil {
+		defer idRows2.Close()
+		for idRows2.Next() {
+			var aid int64
+			var hash string
+			idRows2.Scan(&aid, &hash)
+			if _, exists := idMap[hash]; !exists {
+				idMap[hash] = aid
+			}
+		}
+	}
+
+	// 逐行写 import_rows（在事务内）— 只写 deduped 行
+	for _, e := range deduped {
+		alertID, ok := idMap[e.ContentHash]
+		if ok {
+			tx.Exec(
+				"INSERT INTO import_rows (import_id, import_sheet_id, source_file, excel_row_number, sheet_name, parse_status, raw_json, alert_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+				id, sheetID, filename, e.RowNum, sheetName, "parsed", marshalAlertRow(&e), alertID, time.Now(),
+			)
+			res.inserted++
+		} else {
+			tx.Exec(
+				"INSERT INTO import_rows (import_id, import_sheet_id, source_file, excel_row_number, sheet_name, parse_status, raw_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+				id, sheetID, filename, e.RowNum, sheetName, "skipped_duplicate", marshalAlertRow(&e), time.Now(),
+			)
+			res.skipped++
+		}
+	}
+	return res, nil
+}
+
+func batchRowNums(b []batchEntry) []int {
+	r := make([]int, len(b))
+	for i, e := range b {
+		r[i] = e.RowNum
+	}
+	return r
+}
+
+func batchDeviceIDs(b []batchEntry) []string {
+	r := make([]string, len(b))
+	for i, e := range b {
+		r[i] = e.DeviceID
+	}
+	return r
+}
+func batchTimes(b []batchEntry, first bool) []string {
+	r := make([]string, len(b))
+	if first {
+		for i, e := range b {
+			r[i] = e.FirstAlertTime
+		}
+	} else {
+		for i, e := range b {
+			r[i] = e.LastAlertTime
+		}
+	}
+	return r
+}
+func batchStrings(b []batchEntry, field string) []string {
+	r := make([]string, len(b))
+	for i, e := range b {
+		switch field {
+		case "SourceIP":
+			r[i] = e.SourceIP
+		case "Target":
+			r[i] = e.Target
+		case "TargetType":
+			r[i] = e.TargetType
+		case "Port":
+			r[i] = e.Port
+		case "ThreatType":
+			r[i] = e.ThreatType
+		case "ThreatLevel":
+			r[i] = e.ThreatLevel
+		case "StdAptOrg":
+			r[i] = e.StdAptOrg
+		case "AptOrg":
+			r[i] = e.AptOrg
+		case "AptOrgTier":
+			r[i] = e.AptOrgTier
+		case "Vendors":
+			r[i] = e.Vendors
+		case "Protocol":
+			r[i] = e.Protocol
+		case "IntelTags":
+			r[i] = e.IntelTags
+		case "DNSResolvedIP":
+			r[i] = e.DNSResolvedIP
+		case "AssetType":
+			r[i] = e.AssetType
+		case "AnalysisStatus":
+			r[i] = e.AnalysisStatus
+		case "ContentHash":
+			r[i] = e.ContentHash
+		case "UniqueHash":
+			r[i] = e.UniqueHash
+		}
+	}
+	return r
+}
+func batchAlertCounts(b []batchEntry) []int {
+	r := make([]int, len(b))
+	for i, e := range b {
+		r[i] = e.AlertCount
+	}
+	return r
+}
+func batchIsFocused(b []batchEntry) []int {
+	r := make([]int, len(b))
+	for i, e := range b {
+		r[i] = e.IsFocused
+	}
+	return r
+}
+func marshalAlertRow(e *batchEntry) string {
+	rawJSON, _ := json.Marshal(map[string]interface{}{
+		"device_id": e.DeviceID, "first_alert_time": e.FirstAlertTime,
+		"last_alert_time": e.LastAlertTime, "source_ip": e.SourceIP,
+		"target": e.Target, "target_type": e.TargetType, "port": e.Port,
+		"threat_type": e.ThreatType, "threat_level": e.ThreatLevel,
+		"std_apt_org": e.StdAptOrg, "apt_org": e.AptOrg,
+		"apt_org_tier": e.AptOrgTier, "alert_count": e.AlertCount,
+		"vendors": e.Vendors, "protocol": e.Protocol,
+		"intel_tags": e.IntelTags, "dns_resolved_ip": e.DNSResolvedIP,
+		"asset_type": e.AssetType, "analysis_status": e.AnalysisStatus,
+		"is_focused": e.IsFocused,
+	})
+	return string(rawJSON)
+}
+
+// pqEscape escapes a value for PostgreSQL array literal.
+func pqEscape(s string) string {
+	if s == "" || strings.ContainsAny(s, `{}",\`) {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
+}
+
+func pqArray(s []string) string {
+	elems := make([]string, len(s))
+	for i, v := range s {
+		elems[i] = pqEscape(v)
+	}
+	return "{" + strings.Join(elems, ",") + "}"
+}
+func pqIntArray(s []int) string {
+	r := make([]string, len(s))
+	for i, v := range s {
+		r[i] = fmt.Sprintf("%d", v)
+	}
+	return "{" + strings.Join(r, ",") + "}"
+}
+
+// beginImportBatch 创建事务 + alert INSERT 语句。
+// 不再预准备 import_rows 语句——行写入在 flushBatch 中批量完成。
+func beginImportBatch(db *sql.DB) (*sql.Tx, *sql.Stmt, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	alertStmt, err := tx.Prepare(`
+		INSERT INTO alerts (
+			device_id, first_alert_time, last_alert_time, source_ip, target,
+			target_type, port, threat_type, threat_level, std_apt_org, apt_org,
+			apt_org_tier, alert_count, vendors, protocol, intel_tags, dns_resolved_ip,
+			down_traffic, up_traffic, asset_type, source_file, imported_at,
+			analysis_status, is_focused, import_id, import_sheet_id, excel_row_number,
+			sheet_name, content_hash, unique_hash
+		)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+		WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE content_hash = $29)
+	`)
+	if err != nil {
+		tx.Rollback()
+		return nil, nil, err
+	}
+
+	return tx, alertStmt, nil
+}
+
+func writeRawOnlyRow(tx *sql.Tx, importID, sheetID int, filename string, rowNum int, sheetName, reason, rawJSON string) error {
+	_, err := tx.Exec(
+		"INSERT INTO import_rows (import_id, import_sheet_id, source_file, excel_row_number, sheet_name, parse_status, parse_error, raw_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+		importID, sheetID, filename, rowNum, sheetName, "raw_only", reason, rawJSON, time.Now(),
+	)
+	return err
+}
+
+func missingRequiredFields(v *alertRow) string {
+	missing := make([]string, 0, 4)
+	if v.DeviceID == "" {
+		missing = append(missing, "device_id")
+	}
+	if v.SourceIP == "" {
+		missing = append(missing, "source_ip")
+	}
+	if v.Target == "" {
+		missing = append(missing, "target")
+	}
+	if v.FirstAlertTime == "" || v.LastAlertTime == "" {
+		missing = append(missing, "alert_time")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "missing required fields: " + strings.Join(missing, ",")
+}
+
+func marshalImportRow(v *alertRow) string {
+	rawJSON, _ := json.Marshal(map[string]interface{}{
+		"device_id":        v.DeviceID,
+		"first_alert_time": v.FirstAlertTime,
+		"last_alert_time":  v.LastAlertTime,
+		"source_ip":        v.SourceIP,
+		"target":           v.Target,
+		"target_type":      v.TargetType,
+		"port":             v.Port,
+		"threat_type":      v.ThreatType,
+		"threat_level":     v.ThreatLevel,
+		"std_apt_org":      v.StdAptOrg,
+		"apt_org":          v.AptOrg,
+		"apt_org_tier":     v.AptOrgTier,
+		"alert_count":      v.AlertCount,
+		"vendors":          v.Vendors,
+		"protocol":         v.Protocol,
+		"intel_tags":       v.IntelTags,
+		"dns_resolved_ip":  v.DNSResolvedIP,
+		"asset_type":       v.AssetType,
+		"analysis_status":  v.AnalysisStatus,
+		"is_focused":       v.IsFocused,
+	})
+	return string(rawJSON)
+}
+
+func (s *ImportService) updateImportStatus(id int, status string, progress importProgress, log string) {
 	s.DB.Exec(
-		"UPDATE imports SET status=$1, rows_inserted=$2, rows_skipped=$3, rows_failed=$4, total_rows=$5, parsed_rows=$6, log=$7 WHERE id=$8",
-		status, inserted, skipped, failed, total, parsed, log, id,
+		"UPDATE imports SET status=$1, rows_inserted=$2, rows_skipped=$3, rows_failed=$4, raw_rows=$5, total_rows=$6, parsed_rows=$7, log=$8 WHERE id=$9",
+		status, progress.inserted, progress.skipped, progress.failed, progress.raw, progress.total, progress.processedRows(), log, id,
+	)
+}
+
+func (s *ImportService) updateImportProgress(id int, progress importProgress, log string) {
+	s.DB.Exec(
+		"UPDATE imports SET status='processing', rows_inserted=$1, rows_skipped=$2, rows_failed=$3, raw_rows=$4, parsed_rows=$5, log=$6 WHERE id=$7",
+		progress.inserted, progress.skipped, progress.failed, progress.raw, progress.processedRows(), log, id,
 	)
 }
 
@@ -354,14 +709,14 @@ func (s *ImportService) updateImportStatus(id int, status string, inserted, skip
 func (s *ImportService) GetImport(id int) (map[string]interface{}, error) {
 	var idVal int
 	var sourceFile, status, log, fileHash sql.NullString
-	var totalRows, parsedRows, rowsInserted, rowsSkipped, rowsFailed, queuePos sql.NullInt64
+	var totalRows, parsedRows, rowsInserted, rowsSkipped, rowsFailed, rawRows, queuePos sql.NullInt64
 	var importedAt sql.NullTime
 
 	err := s.DB.QueryRow(
-		"SELECT id, source_file, status, total_rows, parsed_rows, rows_inserted, rows_skipped, rows_failed, log, file_hash, queue_position, imported_at FROM imports WHERE id = $1",
+		"SELECT id, source_file, status, total_rows, parsed_rows, rows_inserted, rows_skipped, rows_failed, raw_rows, log, file_hash, queue_position, imported_at FROM imports WHERE id = $1",
 		id,
 	).Scan(&idVal, &sourceFile, &status, &totalRows, &parsedRows,
-		&rowsInserted, &rowsSkipped, &rowsFailed, &log, &fileHash, &queuePos, &importedAt)
+		&rowsInserted, &rowsSkipped, &rowsFailed, &rawRows, &log, &fileHash, &queuePos, &importedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -375,6 +730,7 @@ func (s *ImportService) GetImport(id int) (map[string]interface{}, error) {
 		"rows_inserted":  nullInt64(rowsInserted),
 		"rows_skipped":   nullInt64(rowsSkipped),
 		"rows_failed":    nullInt64(rowsFailed),
+		"raw_rows":       nullInt64(rawRows),
 		"log":            nullString(log),
 		"file_hash":      nullString(fileHash),
 		"queue_position": nullInt64(queuePos),
@@ -405,11 +761,11 @@ func nullTime(s sql.NullTime) string {
 func (s *ImportService) ListImports() ([]map[string]interface{}, error) {
 	var idVal int
 	var sourceFile, status, log, fileHash sql.NullString
-	var totalRows, parsedRows, rowsInserted, rowsSkipped, rowsFailed, queuePos sql.NullInt64
+	var totalRows, parsedRows, rowsInserted, rowsSkipped, rowsFailed, rawRows, queuePos sql.NullInt64
 	var importedAt sql.NullTime
 
 	rows, err := s.DB.Query(
-		"SELECT id, source_file, status, total_rows, parsed_rows, rows_inserted, rows_skipped, rows_failed, log, file_hash, queue_position, imported_at FROM imports ORDER BY imported_at DESC",
+		"SELECT id, source_file, status, total_rows, parsed_rows, rows_inserted, rows_skipped, rows_failed, raw_rows, log, file_hash, queue_position, imported_at FROM imports ORDER BY imported_at DESC",
 	)
 	if err != nil {
 		return nil, err
@@ -418,7 +774,7 @@ func (s *ImportService) ListImports() ([]map[string]interface{}, error) {
 
 	results := make([]map[string]interface{}, 0)
 	for rows.Next() {
-		if err := rows.Scan(&idVal, &sourceFile, &status, &totalRows, &parsedRows, &rowsInserted, &rowsSkipped, &rowsFailed, &log, &fileHash, &queuePos, &importedAt); err != nil {
+		if err := rows.Scan(&idVal, &sourceFile, &status, &totalRows, &parsedRows, &rowsInserted, &rowsSkipped, &rowsFailed, &rawRows, &log, &fileHash, &queuePos, &importedAt); err != nil {
 			continue
 		}
 		results = append(results, map[string]interface{}{
@@ -430,6 +786,7 @@ func (s *ImportService) ListImports() ([]map[string]interface{}, error) {
 			"rows_inserted":  nullInt64(rowsInserted),
 			"rows_skipped":   nullInt64(rowsSkipped),
 			"rows_failed":    nullInt64(rowsFailed),
+			"raw_rows":       nullInt64(rawRows),
 			"log":            nullString(log),
 			"file_hash":      nullString(fileHash),
 			"queue_position": nullInt64(queuePos),
@@ -673,7 +1030,7 @@ func (s *ImportService) ReprocessQueuedImports() (int, error) {
 		s.queuePos++
 		s.queue <- id
 		s.queueMu.Unlock()
-		s.updateImportStatus(id, "queued", 0, 0, 0, 0, 0, "re-queued for processing")
+		s.updateImportStatus(id, "queued", importProgress{}, "re-queued for processing")
 		count++
 	}
 	return count, nil

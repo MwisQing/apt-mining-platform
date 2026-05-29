@@ -20,7 +20,9 @@ func NewSnapshotHandler(db *sql.DB) *SnapshotHandler {
 // Go backend uses real-time queries (no snapshot table), always returns "ready".
 func (h *SnapshotHandler) GetStatus(c *gin.Context) {
 	var rowCount int64
-	h.DB.QueryRow("SELECT COUNT(*) FROM alerts").Scan(&rowCount)
+	// pg_class.reltuples 是 autovacuum 维护的估算值，零 DB 开销。
+	// reltuples < 0 表示从未统计过，回退到 0。
+	h.DB.QueryRow("SELECT CASE WHEN reltuples < 0 THEN 0 ELSE reltuples END::bigint FROM pg_class WHERE relname = 'alerts'").Scan(&rowCount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":         "ready",
@@ -35,7 +37,9 @@ func (h *SnapshotHandler) GetStatus(c *gin.Context) {
 // This endpoint exists for frontend API compatibility and returns immediate success.
 func (h *SnapshotHandler) Rebuild(c *gin.Context) {
 	var rowCount int64
-	h.DB.QueryRow("SELECT COUNT(*) FROM alerts").Scan(&rowCount)
+	// pg_class.reltuples 是 autovacuum 维护的估算值，零 DB 开销。
+	// reltuples < 0 表示从未统计过，回退到 0。
+	h.DB.QueryRow("SELECT CASE WHEN reltuples < 0 THEN 0 ELSE reltuples END::bigint FROM pg_class WHERE relname = 'alerts'").Scan(&rowCount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":         "ready",

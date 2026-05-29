@@ -45,6 +45,9 @@
               <span v-else-if="processingImport.total_rows > 0" class="processing-detail">
                 （已处理 {{ processedCount }} / {{ processingImport.total_rows }} 行，{{ processingPercent }}%）
               </span>
+              <span v-else-if="processedCount > 0" class="processing-detail">
+                （已处理 {{ processedCount }} 行，正在继续...）
+              </span>
               <span v-else class="processing-detail">
                 （正在读取文件，请稍候...）
               </span>
@@ -921,6 +924,7 @@ const importsList = ref([])
 const importsLoading = ref(false)
 const processingImport = ref(null)
 let importPollTimer = null
+let snapshotStatusTimer = null
 let snapshotPollTimer = null
 let snapshotCheckStarted = false
 
@@ -932,21 +936,19 @@ const uploadProgress = ref(0)
 const uploadingFileName = ref('')
 
 function statusLabel(status) {
-  const map = { success: '成功', partial: '部分成功', failed: '失败', processing: '处理中', queued: '排队中' }
+  const map = { success: '成功', completed: '成功', partial: '部分成功', failed: '失败', processing: '处理中', queued: '排队中' }
   return map[status] || status || '-'
 }
 
 function statusTagType(status) {
-  const map = { success: 'success', partial: 'warning', failed: 'danger', processing: 'primary', queued: 'info' }
+  const map = { success: 'success', completed: 'success', partial: 'warning', failed: 'danger', processing: 'primary', queued: 'info' }
   return map[status] || 'info'
 }
 
-// Processing progress: raw_rows tracks parsed-so-far during processing,
-// then becomes the final 'rows with missing fields' count after completion.
 const processedCount = computed(() => {
   const p = processingImport.value
   if (!p) return 0
-  return (p.rows_inserted || 0) + (p.rows_skipped || 0) + (p.rows_failed || 0) + (p.raw_rows || 0)
+  return p.parsed_rows || (p.rows_inserted || 0) + (p.rows_skipped || 0) + (p.rows_failed || 0) + (p.raw_rows || 0)
 })
 
 const processingPercent = computed(() => {
@@ -959,6 +961,15 @@ const hasQueuedImports = computed(() => {
   return importsList.value.some(i => i.status === 'queued')
 })
 
+function pickVisibleProcessingImport(list) {
+  const processing = list.find(i => i.status === 'processing' || i.status === 'uploaded')
+  if (processing) return processing
+  const queued = list
+    .filter(i => i.status === 'queued')
+    .sort((a, b) => (a.queue_position || Number.MAX_SAFE_INTEGER) - (b.queue_position || Number.MAX_SAFE_INTEGER))
+  return queued[0] || null
+}
+
 async function loadImports() {
   importsLoading.value = true
   try {
@@ -966,8 +977,8 @@ async function loadImports() {
     const list = Array.isArray(res) ? res : (res.items || [])
     importsList.value = list
 
-    // 检查是否有正在处理的任务（queued/processing/uploaded 都表示处理中）
-    const processing = list.find(i => i.status === 'queued' || i.status === 'processing' || i.status === 'uploaded')
+    // 优先展示正在处理的任务；没有 processing 时再展示队首排队任务
+    const processing = pickVisibleProcessingImport(list)
     if (processing) {
       processingImport.value = processing
       startImportPolling(processing.id)
@@ -990,8 +1001,9 @@ async function handleReprocessQueued() {
       { confirmButtonText: '确认', cancelButtonText: '取消', type: 'info' }
     )
     const res = await reprocessQueuedImports()
-    if (res.requeued > 0) {
-      ElMessage.success(`已重新处理 ${res.requeued} 个卡住的导入任务`)
+    const requeued = res.requeued ?? res.reprocessed ?? 0
+    if (requeued > 0) {
+      ElMessage.success(`已重新处理 ${requeued} 个卡住的导入任务`)
     } else {
       ElMessage.info(res.message || '没有卡住的任务')
     }
@@ -1009,7 +1021,6 @@ async function startImportPolling(id) {
   let consecutiveFailures = 0
   const MAX_POLL_FAILURES = 10  // ~30 seconds of no response
 
-  // Start snapshot status polling alongside import polling
   loadSnapshotStatus()
 
   importPollTimer = setInterval(async () => {
@@ -1031,6 +1042,17 @@ async function startImportPolling(id) {
           ElMessage.success('导入完成：' + detail.source_file)
         }
       } else {
+        if (detail.status === 'queued') {
+          const res = await fetchImports()
+          const list = Array.isArray(res) ? res : (res.items || [])
+          importsList.value = list
+          const active = pickVisibleProcessingImport(list)
+          if (active && active.id !== id) {
+            processingImport.value = active
+            startImportPolling(active.id)
+            return
+          }
+        }
         processingImport.value = detail
       }
     } catch {
@@ -1069,8 +1091,19 @@ async function loadSnapshotStatus() {
   } catch {
     // 静默失败
   }
-  // 每5秒刷新一次快照状态
-  setTimeout(loadSnapshotStatus, 5000)
+}
+
+function startSnapshotStatusPolling() {
+  stopSnapshotStatusPolling()
+  loadSnapshotStatus()
+  snapshotStatusTimer = setInterval(loadSnapshotStatus, 15000)
+}
+
+function stopSnapshotStatusPolling() {
+  if (snapshotStatusTimer) {
+    clearInterval(snapshotStatusTimer)
+    snapshotStatusTimer = null
+  }
 }
 
 function formatSnapshotTime(isoString) {
@@ -1097,8 +1130,9 @@ function startSnapshotCheck(sourceFile, onReady) {
     attempts += 1
     try {
       const status = await fetchSnapshotStatus()
+      snapshotBuildStatus.value = status
       const isBuilding = status?.status === 'building' || Boolean(status?.building_version)
-      const isReady = status?.status === 'ready' && Boolean(status?.active_version)
+      const isReady = status?.status === 'ready'
       const isError = status?.status === 'error'
 
       if (isReady && !isBuilding) {
@@ -1967,11 +2001,12 @@ onMounted(() => {
   loadVersion()
   loadChangelog()
   loadAllTags()
-  loadSnapshotStatus()
+  startSnapshotStatusPolling()
 })
 
 onBeforeUnmount(() => {
   stopImportPolling()
+  stopSnapshotStatusPolling()
   stopSnapshotPolling()
 })
 </script>

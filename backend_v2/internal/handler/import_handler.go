@@ -182,7 +182,7 @@ func (h *ImportHandler) ReprocessQueuedImports(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"reprocessed": count})
+	c.JSON(http.StatusOK, gin.H{"reprocessed": count, "requeued": count})
 }
 
 // RepairImportMetadata POST /api/imports/{id}/repair-metadata
