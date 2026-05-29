@@ -66,19 +66,6 @@ def suggest_version(old_ver: str) -> str:
     return old_ver
 
 
-def copy_ignore_func(_dir, files):
-    """shutil.copytree ignore 回调，排除 __pycache__、*.pyc、node_modules、.gocache、VERSION（子目录）"""
-    ignored = [f for f in files if fnmatch.fnmatch(f, "*.pyc")]
-    if "node_modules" in files:
-        ignored.append("node_modules")
-    if ".gocache" in files:
-        ignored.append(".gocache")
-    # 排除子目录中的 VERSION 文件（统一使用根目录的 VERSION）
-    if "VERSION" in files:
-        ignored.append("VERSION")
-    return ignored
-
-
 def build_frontend() -> bool:
     frontend_dir = SCRIPT_DIR / "frontend"
     frontend_pkg = frontend_dir / "package.json"
@@ -165,6 +152,31 @@ def build_go_backend() -> bool:
     return True
 
 
+def copy_tree_with_skip(src: Path, dest: Path, is_root: bool = True):
+    """Recursively copy, skipping excluded dirs and files."""
+    for item in src.iterdir():
+        if item.name in EXCLUDE_DIRS:
+            continue
+        if src.name == "backend_v2" and item.name == "uploads":
+            continue
+        if item.name == ".gocache":
+            continue
+        if item.name == "VERSION" and not is_root:
+            continue
+        item_dest = dest / item.name
+        if item.is_dir():
+            item_dest.mkdir(exist_ok=True)
+            copy_tree_with_skip(item, item_dest, is_root=False)
+        else:
+            skip = False
+            for pat in EXCLUDE_FILE_PATTERNS:
+                if fnmatch.fnmatch(item.name, pat):
+                    skip = True
+                    break
+            if not skip:
+                shutil.copy2(item, item_dest)
+
+
 def copy_project(tmp_dir: Path):
     """复制项目文件到临时目录，排除敏感/临时目录"""
     print("  正在复制文件...")
@@ -176,7 +188,8 @@ def copy_project(tmp_dir: Path):
             continue
         dest = tmp_dir / item.name
         if item.is_dir():
-            shutil.copytree(item, dest, ignore=copy_ignore_func)
+            dest.mkdir(exist_ok=True)
+            copy_tree_with_skip(item, dest)
         else:
             skip = False
             for pat in EXCLUDE_FILE_PATTERNS:

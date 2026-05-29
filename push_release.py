@@ -24,7 +24,7 @@ DEFAULT_REMOTE = "https://github.com/MwisQing/apt-mining-platform.git"
 GIT_EXCLUDE = [
     "data/", "uploads/", "backups/", "releases/",
     "venv/", "node_modules/", "__pycache__/",
-    ".gocache/",
+    ".gocache/", "backend_v2/uploads/",
     ".env", "*.db", "tmp_*.db", "*_regression.db", "uploads-test",
 ]
 
