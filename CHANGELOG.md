@@ -1,5 +1,34 @@
 # Changelog
 
+## v4.19 - 2026-05-28
+
+### 功能补全：告警标注、审计日志、设备管理（3 个独立页面）
+
+### 后端
+
+- 新增：`audit_handler.go` — `GET /api/audit-log` 审计日志分页查询（时间范围+操作类型+关键词筛选）、`GET /api/audit-log/actions` 操作类型选项
+- 新增：`audit_repo.go` — 读 `audit_log` 表，支持分页+筛选
+- 新增：`device_handler.go` — `POST /api/devices/:id/tags` 设备标签绑定（RETURNING id 获取新建标签 ID）、`DELETE /api/devices/:id/tags/:tag_name` 设备标签解绑
+- 增强：`device_repo.go` — `DeviceItem` 新增 `device_tags`/`event_count` 字段，4 个查询方法 SQL 增加标签聚合子查询 + 事件计数子查询；新增 `AddDeviceTags`/`RemoveDeviceTag` 方法
+- 增强：`main.go` — 注册 audit handler + 4 条新路由
+
+### 前端
+
+- 新增：`AlertAnnotation.vue` — 告警标注页面，复用已有 `PATCH /api/alerts/:id/annotation` 接口，支持日期/威胁类型/关键词筛选，弹窗编辑分析状态和重点关注
+- 新增：`AuditLog.vue` — 审计日志只读页面，分页+筛选
+- 新增：`DeviceManager.vue` — 设备管理页面，支持关键词搜索+标签多选筛选+编辑标签弹窗
+- 新增：`api/audit.js` — fetchAuditLogs / fetchAuditActions
+- 新增：`api/devices.js` — listDevices / addDeviceTags / removeDeviceTag
+- 增强：`router/index.js` — 新增 `/annotations`、`/devices`、`/audit` 三条路由
+- 增强：`App.vue` — 侧边栏从 5 项扩展到 8 项（新增告警标注/设备管理/审计日志），新增 EditPen/Connection/Document 图标
+
+### 验收
+
+- 7/7 核心场景 + 2 个附加场景通过：后端健康检查、审计日志分页、操作类型选项、设备标签绑定/解绑、设备列表含标签+事件数、前端路由包含 3 个新路径、PATCH 告警标注、RETURNING id 修复
+- 已知限制：空数据时 audit-log/actions 返回 `{"actions":null}` 而非 `{"actions":[]}`，前端已用 `|| []` 防御
+
+---
+
 ## v4.14 - 2026-05-25
 
 ### 修复：创建事件后 IOC 不显示事件标签

@@ -57,6 +57,7 @@ func main() {
 	tagRepo := repository.NewTagRepo(database)
 	tracedRepo := repository.NewTracedRepo(database)
 	deviceRepo := repository.NewDeviceRepo(database)
+	auditRepo := repository.NewAuditRepo(database)
 
 	// Services
 	candidateSvc := service.NewCandidateService(candidateRepo, cfg)
@@ -75,6 +76,7 @@ func main() {
 	deviceHandler := handler.NewDeviceHandler(deviceRepo)
 	snapshotHandler := handler.NewSnapshotHandler(database)
 	configHandler := handler.NewConfigHandler(cfg)
+	auditHandler := handler.NewAuditHandler(auditRepo)
 
 	api := r.Group("/api")
 	{
@@ -132,6 +134,11 @@ func main() {
 		api.POST("/traced/import", tracedHandler.ImportTracedExcel)
 
 		api.GET("/devices", deviceHandler.ListDevices)
+		api.POST("/devices/:id/tags", deviceHandler.AddDeviceTags)
+		api.DELETE("/devices/:id/tags/:tag_name", deviceHandler.RemoveDeviceTag)
+
+		api.GET("/audit-log", auditHandler.GetAuditLogs)
+		api.GET("/audit-log/actions", auditHandler.GetAuditActions)
 
 		api.GET("/config", configHandler.GetConfig)
 		api.POST("/config", configHandler.SaveConfig)

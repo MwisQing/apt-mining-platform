@@ -134,14 +134,15 @@ apt-mining-platform/
 │   ├── go.mod / go.sum
 │   ├── internal/
 │   │   ├── handler/              # HTTP 请求处理
-│   │   │   ├── candidate_handler.go   # /api/alert-candidates
+│   │   │   ├── candidate_handler.go   # /api/alert-candidates, /api/alerts, PATCH annotation
 │   │   │   ├── health.go              # /api/health, /api/version
 │   │   │   ├── import_handler.go      # /api/imports
 │   │   │   ├── event_handler.go       # /api/events
 │   │   │   ├── tag_handler.go         # /api/tags
 │   │   │   ├── traced_handler.go      # /api/traced
 │   │   │   ├── config_handler.go      # /api/config
-│   │   │   ├── device_handler.go      # /api/devices
+│   │   │   ├── device_handler.go      # /api/devices, 标签绑定/解绑
+│   │   │   ├── audit_handler.go       # /api/audit-log
 │   │   │   └── snapshot_handler.go    # /api/snapshots
 │   │   ├── service/              # 业务逻辑
 │   │   │   ├── candidate_service.go   # 候选 CTE SQL 构建
@@ -153,7 +154,8 @@ apt-mining-platform/
 │   │   │   ├── event_repo.go
 │   │   │   ├── tag_repo.go
 │   │   │   ├── traced_repo.go
-│   │   │   └── device_repo.go
+│   │   │   ├── device_repo.go
+│   │   │   └── audit_repo.go
 │   │   ├── model/model.go        # 数据结构体
 │   │   └── config/config.go      # YAML 配置加载
 │   └── migrations/               # PostgreSQL 迁移 SQL
@@ -162,9 +164,14 @@ apt-mining-platform/
 │   │   ├── Workbench.vue         # 研判工作台
 │   │   ├── EventManager.vue      # 事件管理
 │   │   ├── AlertList.vue         # 原始告警列表
+│   │   ├── AlertAnnotation.vue   # 告警标注
+│   │   ├── DeviceManager.vue     # 设备管理
+│   │   ├── AuditLog.vue          # 审计日志
 │   │   ├── IocNotes.vue          # IOC 备注管理
 │   │   └── Settings.vue          # 导入与设置
 │   ├── api/                      # HTTP 请求封装
+│   │   ├── audit.js                # 审计日志 API
+│   │   └── devices.js              # 设备管理 API
 │   ├── composables/              # 可复用逻辑
 │   └── router/index.js           # 路由配置
 ├── frontend/dist/                # 前端构建产物
@@ -224,6 +231,11 @@ apt-mining-platform/
 | GET | `/api/config/dicts` | config_handler.go | 词典内容 |
 | POST | `/api/config/reload` | config_handler.go | 重载词典 |
 | GET | `/api/devices` | device_handler.go | 设备列表 |
+| POST | `/api/devices/{id}/tags` | device_handler.go | 设备标签绑定 |
+| DELETE | `/api/devices/{id}/tags/{tag_name}` | device_handler.go | 设备标签解绑 |
+| PATCH | `/api/alerts/{id}/annotation` | candidate_handler.go | 告警标注（分析状态+重点关注） |
+| GET | `/api/audit-log` | audit_handler.go | 审计日志分页查询 |
+| GET | `/api/audit-log/actions` | audit_handler.go | 审计日志操作类型选项 |
 | GET | `/api/snapshots/status` | snapshot_handler.go | 快照状态 |
 
 #### `/api/alert-candidates` 核心参数
@@ -265,7 +277,7 @@ page, page_size            分页
 - **语言：** JavaScript（不用 TypeScript）
 - **状态管理：** 组件本地状态 + composables，不需要 Pinia
 - **HTTP 请求：** axios，封装在 `src/api/`
-- **路由：** 5 个主页面（`/`, `/alerts`, `/events`, `/ioc-notes`, `/settings`）
+- **路由：** 8 个主页面（`/`, `/alerts`, `/annotations`, `/events`, `/devices`, `/ioc-notes`, `/settings`, `/audit`）
 - **构建产物：** `frontend/dist/`，Go 后端直接 mount 静态文件
 
 ---
@@ -303,7 +315,7 @@ page, page_size            分页
 
 ## 数据库表（PostgreSQL）
 
-`alerts`, `mined_events`, `mined_event_devices`, `mined_event_iocs`, `event_followups`, `tags`, `tag_batches`（含 device_ids_snapshot 快照）, `device_tags`, `traced_targets`, `imports`（含 file_hash/queue_position）, `import_sheets`, `import_rows`, `audit_log`, `config`
+`alerts`（含 analysis_status/is_focused/annotation_note）, `mined_events`, `mined_event_devices`, `mined_event_iocs`, `event_followups`, `tags`, `tag_batches`（含 device_ids_snapshot 快照）, `device_tags`, `traced_targets`, `imports`（含 file_hash/queue_position）, `import_sheets`, `import_rows`, `audit_log`（操作审计）, `config`
 
 **无快照表、无预计算表** — Go 版使用 CTE SQL 实时查询，不再需要快照机制。
 
@@ -379,5 +391,6 @@ page, page_size            分页
 | 2026-05-25 | v4.16 工作台 page_size 上限提升 | **修复前端显示总数上限卡在 99999**：(1) **根因** — `Workbench.vue` 的 `loadData()` 用 `page_size: 99999` 拉取全量数据，`displayTotal` 取的是实际接收到的 `allFilteredData.length`（上限 99999），而非 `res.total`（真实 COUNT 值）；(2) **修复** — `page_size` 从 99999 改为 200000，前端构建 + 同步至 `backend_v2/static/` |
 | 2026-05-25 | v4.17 事件IOC提取+标签创建体验修复 | **修复 4 项功能**：(1) **IOC提取补全MD5/设备ID** — `ioc_extractor.go` 32-hex 值现在总是提取为 md5 类型 IOC；设备上下文值同时提取为 device + md5 两种类型（dedup key 加入 type 字段）；(2) **标签自动填充颜色** — `Settings.vue` 批量添加标签对话框，选择已存在标签时自动填充该标签已有的颜色（`@change="onTagSelect"` 匹配 `existingTags` 中的 color）；(3) **标签预设颜色** — 批量添加标签对话框新增 10 种预设颜色快捷按钮（蓝/绿/橙/红/灰/紫等），点击即选；(4) **标签响应字段修复** — `confirmBatchAddTag` 响应字段从 `res.device_count`/`res.tag_name`（undefined）改为 `res.imported`/`batchAddForm.value.tag_name`；(5) **Review 修复** — 32-hex 值经 prefix/GUID 已归类为 device 时不再重复输出 md5（避免视觉噪声）；`onTagSelect` 增加空值保护；Go vet 通过，前端构建 + 同步至 `backend_v2/static/` |
 | 2026-05-26 | v4.18 侧边栏收拢/展开 | **新增左侧导航栏收拢/展开功能**（仅修改 `App.vue`）：(1) 顶部箭头按钮触发收拢，宽度 240px → 64px，仅保留图标居中显示；(2) 品牌文字、导航文字、底部状态栏收拢时淡出隐藏（opacity + max-width/height 过渡，0.25s ease）；(3) 箭头图标根据状态翻转（ArrowLeft ↔ ArrowRight）；(4) 收拢状态下 hover 图标显示 Element Plus Tooltip（`el-tooltip`，`placement="right"`，200ms 延迟防闪烁）；(5) `localStorage` 持久化收拢状态，刷新后保持用户偏好；(6) 响应式布局 <1120px 自动覆盖收拢状态，切换为顶部横条导航；(7) 无障碍：`aria-label`、`:focus-visible` 键盘焦点样式；(8) 清理未使用的 `useRouter` 导入和 `navigate()` 函数；(9) 6 个提交，两轮 spec + 代码质量 review 通过，构建验证通过，静态文件已同步至 `backend_v2/static/` |
+| 2026-05-28 | v4.19 功能补全（3 个独立页面） | **新增告警标注、审计日志、设备管理 3 个页面**：(1) **告警标注页** `/annotations` — `AlertAnnotation.vue` 复用已有 `PATCH /api/alerts/:id/annotation` 接口，支持按日期/威胁类型/关键词筛选告警，弹窗编辑分析状态（未分析/分析中/已完成）和重点关注开关；(2) **审计日志页** `/audit` — 新建 `audit_handler.go` + `audit_repo.go`，`GET /api/audit-log` 读 `audit_log` 表支持分页+时间范围+操作类型+关键词筛选，`GET /api/audit-log/actions` 返回操作类型选项，`AuditLog.vue` 只读展示；(3) **设备管理页** `/devices` — `device_repo.go` 增强：`DeviceItem` 新增 `device_tags`/`event_count` 字段，4 个查询方法 SQL 增加标签聚合+事件计数子查询；`device_handler.go` 新增 `POST /api/devices/:id/tags`（绑定标签，RETURNING id 获取新建标签 ID）和 `DELETE /api/devices/:id/tags/:tag_name`（解绑标签）；`DeviceManager.vue` 支持关键词搜索+标签多选筛选+编辑标签弹窗；(4) **侧边栏更新** — `App.vue` 导航从 5 项扩展到 8 项：研判工作台/原始告警/告警标注/事件管理/设备管理/IOC备注/导入与设置/审计日志；新增 `EditPen`/`Connection`/`Document` 图标；`pageMeta` 和 `TOPBAR_HIDDEN_ROUTES` 同步更新；(5) **API 封装** — 新建 `api/audit.js`（fetchAuditLogs/fetchAuditActions）和 `api/devices.js`（listDevices/addDeviceTags/removeDeviceTag）；(6) **路由** — `router/index.js` 新增 `/annotations`、`/devices`、`/audit` 三条路由；**验收 7/7 核心场景 + 2 个附加场景通过**：后端健康检查、审计日志分页、操作类型选项、设备标签绑定/解绑、设备列表含标签+事件数、前端路由包含 3 个新路径、PATCH 告警标注、RETURNING id 修复 |
 
 

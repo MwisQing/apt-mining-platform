@@ -90,6 +90,9 @@ import { useRoute } from 'vue-router'
 import {
   ArrowLeft,
   ArrowRight,
+  Connection,
+  Document,
+  EditPen,
   FolderOpened,
   List,
   Monitor,
@@ -109,10 +112,13 @@ function toggleSidebar() {
 
 const navItems = [
   { path: '/', label: '研判工作台', icon: Monitor },
+  { path: '/alerts', label: '原始告警', icon: List },
+  { path: '/annotations', label: '告警标注', icon: EditPen },
   { path: '/events', label: '事件管理', icon: FolderOpened },
+  { path: '/devices', label: '设备管理', icon: Connection },
   { path: '/ioc-notes', label: 'IOC 备注', icon: Notebook },
   { path: '/settings', label: '导入与设置', icon: Setting },
-  { path: '/alerts', label: '原始告警', icon: List },
+  { path: '/audit', label: '审计日志', icon: Document },
 ]
 
 const pageMeta = {
@@ -141,6 +147,21 @@ const pageMeta = {
     title: '原始告警',
     subtitle: '查看完整原始告警明细，验证候选结果与底层数据来源。',
   },
+  '/annotations': {
+    kicker: '',
+    title: '告警标注',
+    subtitle: '对单条告警设置分析状态和重点关注，沉淀人工判断。',
+  },
+  '/devices': {
+    kicker: '',
+    title: '设备管理',
+    subtitle: '按设备维度查看标签、关联事件和告警统计。',
+  },
+  '/audit': {
+    kicker: '',
+    title: '审计日志',
+    subtitle: '查看系统操作历史记录，追踪每一步变更。',
+  },
 }
 
 const themeOptions = [
@@ -150,7 +171,7 @@ const themeOptions = [
 ]
 
 const currentPage = computed(() => pageMeta[route.path] || pageMeta['/'])
-const TOPBAR_HIDDEN_ROUTES = new Set(['/events', '/ioc-notes', '/settings', '/alerts'])
+const TOPBAR_HIDDEN_ROUTES = new Set(['/events', '/ioc-notes', '/settings', '/alerts', '/annotations', '/devices', '/audit'])
 const hasTopbarCopy = computed(() => {
   if (TOPBAR_HIDDEN_ROUTES.has(route.path)) return false
   return Boolean(currentPage.value.kicker || currentPage.value.title || currentPage.value.subtitle)
