@@ -1,0 +1,9 @@
+# 真 APT 组织词典 —— 用户维护，系统只读
+# canonical: 规范名（中文）；aliases: 任何命中都算；tier: 分级参考
+organizations:
+  - canonical: 海莲花
+    aliases: [OceanLotus, APT32, oceanlotus, sealotus]
+    tier: 1
+  # - canonical: ...
+  #   aliases: [...]
+  #   tier: 2

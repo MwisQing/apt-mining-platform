@@ -1,0 +1,47 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+
+# Database
+data/
+
+# Backups
+backups/
+
+# Uploads (keep directory, ignore files)
+uploads/*
+!uploads/.keep
+
+# Logs
+logs/
+
+# Frontend
+frontend/node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / Temp
+tmp_*.db
+*_regression.db
+.gocache/
+.gomodcache/
+
+# Release packages
+releases/
+
+# Secrets
+.env
+
+# Daemon
+backend.pid

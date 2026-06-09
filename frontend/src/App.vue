@@ -1,0 +1,598 @@
+<template>
+  <div class="app-shell" :class="{ 'app-shell--collapsed': isCollapsed }">
+    <aside class="sidebar" :class="{ 'sidebar--collapsed': isCollapsed }">
+      <div class="brand-card">
+        <div class="brand-mark">
+          <el-icon :size="18"><Monitor /></el-icon>
+        </div>
+        <div class="brand-copy">
+          <div class="brand-title">APT Mining</div>
+          <div class="brand-subtitle">Workbench</div>
+        </div>
+        <button class="collapse-btn" @click="toggleSidebar" aria-label="Toggle sidebar" title="Toggle sidebar">
+          <el-icon :size="14">
+            <ArrowLeft v-if="!isCollapsed" />
+            <ArrowRight v-else />
+          </el-icon>
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <el-tooltip
+          v-for="item in navItems"
+          :key="item.path"
+          :content="item.label"
+          :disabled="!isCollapsed"
+          placement="right"
+          :show-after="200"
+        >
+          <router-link
+            :to="item.path"
+            class="nav-item"
+            :class="{ 'nav-item--active': route.path === item.path }"
+            active-class="nav-item--active"
+          >
+            <span class="nav-item__icon">
+              <el-icon><component :is="item.icon" /></el-icon>
+            </span>
+            <span class="nav-item__content">
+              <span class="nav-item__label">{{ item.label }}</span>
+            </span>
+          </router-link>
+        </el-tooltip>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="footer-row">
+          <div class="theme-dots">
+            <button
+              v-for="theme in themeOptions"
+              :key="theme.value"
+              class="theme-dot-btn"
+              :class="{ active: currentTheme === theme.value }"
+              :title="theme.label"
+              @click="setTheme(theme.value)"
+            >
+              <span class="dot" :class="theme.dotClass"></span>
+            </button>
+          </div>
+          <span class="footer-end">127.0.0.1:9099</span>
+        </div>
+        <div class="version-row" v-if="versionStr">
+          <span class="version-text">APT Mining v{{ versionStr }}</span>
+        </div>
+      </div>
+    </aside>
+
+    <section class="main-shell">
+      <header v-if="hasTopbarCopy" class="topbar">
+        <div class="topbar-copy">
+          <template v-if="currentPage.kicker || currentPage.title || currentPage.subtitle">
+            <p v-if="currentPage.kicker" class="topbar-kicker">{{ currentPage.kicker }}</p>
+            <h1 v-if="currentPage.title" class="topbar-title">{{ currentPage.title }}</h1>
+            <p v-if="currentPage.subtitle" class="topbar-subtitle">{{ currentPage.subtitle }}</p>
+          </template>
+        </div>
+      </header>
+
+      <main class="content-pane">
+        <transition name="page-fade" mode="out-in">
+          <router-view :key="$route.path" />
+        </transition>
+      </main>
+    </section>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import {
+  ArrowLeft,
+  ArrowRight,
+  Connection,
+  Document,
+  EditPen,
+  FolderOpened,
+  List,
+  Monitor,
+  Notebook,
+  Setting,
+} from '@element-plus/icons-vue'
+import { fetchVersion } from './api/version'
+
+const route = useRoute()
+const currentTheme = ref('dark')
+const versionStr = ref('')
+const isCollapsed = ref(localStorage.getItem('sidebar-collapsed') === 'true')
+function toggleSidebar() {
+  isCollapsed.value = !isCollapsed.value
+  localStorage.setItem('sidebar-collapsed', isCollapsed.value)
+}
+
+const navItems = [
+  { path: '/', label: '研判工作台', icon: Monitor },
+  { path: '/alerts', label: '原始告警', icon: List },
+  { path: '/annotations', label: '告警标注', icon: EditPen },
+  { path: '/events', label: '事件管理', icon: FolderOpened },
+  { path: '/devices', label: '设备管理', icon: Connection },
+  { path: '/ioc-notes', label: 'IOC 备注', icon: Notebook },
+  { path: '/settings', label: '导入与设置', icon: Setting },
+  { path: '/audit', label: '审计日志', icon: Document },
+]
+
+const pageMeta = {
+  '/': {
+    kicker: '',
+    title: '',
+    subtitle: '',
+  },
+  '/events': {
+    kicker: '',
+    title: '事件管理',
+    subtitle: '维护事件详情、关联设备与 IOC，并持续沉淀跟进记录。',
+  },
+  '/ioc-notes': {
+    kicker: '',
+    title: 'IOC 备注',
+    subtitle: '集中维护追踪目标备注，方便跨批次继承历史判断。',
+  },
+  '/settings': {
+    kicker: '',
+    title: '导入与设置',
+    subtitle: '处理告警导入、标签批次、追踪库和系统配置。',
+  },
+  '/alerts': {
+    kicker: '',
+    title: '原始告警',
+    subtitle: '查看完整原始告警明细，验证候选结果与底层数据来源。',
+  },
+  '/annotations': {
+    kicker: '',
+    title: '告警标注',
+    subtitle: '对单条告警设置分析状态和重点关注，沉淀人工判断。',
+  },
+  '/devices': {
+    kicker: '',
+    title: '设备管理',
+    subtitle: '按设备维度查看标签、关联事件和告警统计。',
+  },
+  '/audit': {
+    kicker: '',
+    title: '审计日志',
+    subtitle: '查看系统操作历史记录，追踪每一步变更。',
+  },
+}
+
+const themeOptions = [
+  { value: 'dark', label: '暗色主题', shortLabel: '暗色', dotClass: 'dot-dark' },
+  { value: 'vscode-light', label: '浅色主题', shortLabel: '浅色', dotClass: 'dot-light' },
+  { value: 'vs2026', label: '蓝灰主题', shortLabel: '蓝灰', dotClass: 'dot-blue' },
+]
+
+const currentPage = computed(() => pageMeta[route.path] || pageMeta['/'])
+const TOPBAR_HIDDEN_ROUTES = new Set(['/events', '/ioc-notes', '/settings', '/alerts', '/annotations', '/devices', '/audit'])
+const hasTopbarCopy = computed(() => {
+  if (TOPBAR_HIDDEN_ROUTES.has(route.path)) return false
+  return Boolean(currentPage.value.kicker || currentPage.value.title || currentPage.value.subtitle)
+})
+
+function setTheme(theme) {
+  currentTheme.value = theme
+  document.documentElement.setAttribute('data-theme', theme)
+  localStorage.setItem('apt-workbench-theme', theme)
+}
+
+onMounted(async () => {
+  const savedTheme = localStorage.getItem('apt-workbench-theme') || 'dark'
+  setTheme(savedTheme)
+  try {
+    const ver = await fetchVersion()
+    versionStr.value = ver.version || ''
+  } catch { /* silent */ }
+})
+</script>
+
+<style scoped>
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  background: var(--bg-primary);
+  transition: grid-template-columns 0.25s ease;
+}
+
+.app-shell--collapsed {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px 14px 14px;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border-strong);
+  transition: padding 0.25s ease;
+}
+
+.sidebar--collapsed {
+  padding: 20px 8px 8px;
+}
+
+.sidebar--collapsed .brand-copy {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-width 0.25s ease;
+}
+
+.sidebar--collapsed .sidebar-footer {
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-height 0.25s ease;
+}
+
+.brand-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--text-inverse);
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  box-shadow: 0 6px 14px rgba(44, 120, 255, 0.22);
+  flex-shrink: 0;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.brand-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.brand-subtitle {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.collapse-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.collapse-btn:hover {
+  background: var(--sidebar-active);
+  color: var(--text-primary);
+}
+
+.collapse-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.nav-section {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: var(--sidebar-text);
+  text-align: left;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.nav-item:hover {
+  border-color: var(--border-strong);
+  border-bottom-color: transparent;
+  background: var(--sidebar-active);
+  color: var(--sidebar-active-text);
+}
+
+.nav-item--active {
+  border-color: var(--border-strong);
+  border-bottom-color: transparent;
+  border-left-color: var(--accent);
+  background: var(--sidebar-active);
+  color: var(--sidebar-active-text);
+  box-shadow: none;
+}
+
+.nav-item__icon {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  flex-shrink: 0;
+  color: inherit;
+  background: transparent;
+}
+
+.nav-item--active .nav-item__icon {
+  background: transparent;
+  color: var(--accent);
+}
+
+.nav-item__content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nav-item__label {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.sidebar--collapsed .nav-item__content {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-width 0.25s ease;
+}
+
+.sidebar--collapsed .brand-card {
+  justify-content: center;
+  padding: 8px 4px;
+}
+
+.sidebar--collapsed .collapse-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.sidebar--collapsed .brand-mark {
+  margin: 0 auto;
+}
+
+.sidebar--collapsed .nav-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar--collapsed .nav-item {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-left: 3px solid transparent;
+  padding: 0;
+}
+
+.sidebar--collapsed .nav-item--active {
+  border-left-color: var(--accent);
+}
+
+
+.sidebar-footer {
+  position: relative;
+  z-index: 1;
+  margin-top: auto;
+}
+
+.footer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.theme-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.theme-dot-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+  background: transparent;
+}
+
+.theme-dot-btn:hover {
+  transform: scale(1.1);
+}
+
+.theme-dot-btn.active {
+  border-color: var(--accent);
+}
+
+.theme-dot-btn .dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.dot-dark {
+  background: #0d1829;
+}
+.dot-light {
+  background: #fbfdff;
+}
+.dot-blue {
+  background: #f5f8fc;
+}
+
+.footer-end {
+  flex: 1;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.version-row {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+  margin-top: 4px;
+}
+
+.version-text {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.main-shell {
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 24px 28px 18px;
+}
+
+.topbar-kicker {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.topbar-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: clamp(24px, 2vw, 32px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.topbar-subtitle {
+  max-width: 760px;
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.content-pane {
+  flex: 1;
+  min-height: 0;
+  padding: 0 28px 28px;
+  overflow: auto;
+}
+
+@media (max-width: 1120px) {
+  .app-shell,
+  .app-shell--collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: relative;
+    height: auto;
+    overflow: visible;
+    gap: 18px;
+    padding-bottom: 22px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-strong);
+  }
+
+  .nav-section {
+    overflow-x: auto;
+  }
+
+  .nav-item {
+    min-width: 220px;
+  }
+
+  .main-shell {
+    height: auto;
+    overflow-y: visible;
+  }
+}
+
+@media (max-width: 720px) {
+  .sidebar {
+    padding: 18px 14px 16px;
+  }
+
+  .brand-card {
+    padding: 14px;
+  }
+
+  .topbar {
+    padding: 18px 16px 14px;
+    flex-direction: column;
+  }
+
+  .content-pane {
+    padding: 0 16px 18px;
+  }
+}
+</style>
