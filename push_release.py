@@ -30,6 +30,22 @@ GIT_EXCLUDE = [
     ".env", "*.db", "tmp_*.db", "*_regression.db", "uploads-test",
 ]
 
+NETWORK_ERROR_MARKERS = (
+    "failed to connect",
+    "could not connect",
+    "couldn't connect",
+    "connection timed out",
+    "could not resolve host",
+    "operation timed out",
+    "network is unreachable",
+)
+
+NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "fetch first",
+    "remote contains work",
+)
+
 
 def git_exclude_pathspec(pattern: str) -> str:
     normalized = pattern.replace("\\", "/")
@@ -112,6 +128,33 @@ def has_changes() -> bool:
     return bool(result.stdout.strip())
 
 
+def has_head_commit() -> bool:
+    result = run("git rev-parse --verify HEAD", capture=True)
+    return result.returncode == 0
+
+
+def has_unpushed_commits() -> bool:
+    """检查是否有本地提交尚未推送到上游分支。"""
+    if not has_head_commit():
+        return False
+
+    upstream = run(
+        'git rev-parse --abbrev-ref --symbolic-full-name "@{u}"',
+        capture=True,
+    )
+    if upstream.returncode != 0:
+        return True
+
+    ahead = run('git rev-list --count "@{u}..HEAD"', capture=True)
+    if ahead.returncode != 0:
+        return True
+
+    try:
+        return int(ahead.stdout.strip() or "0") > 0
+    except ValueError:
+        return False
+
+
 def show_changes():
     run("git status --short")
 
@@ -144,18 +187,56 @@ def get_current_branch() -> str:
     return branch
 
 
+def command_output(result: subprocess.CompletedProcess) -> str:
+    return "\n".join(
+        part for part in (getattr(result, "stdout", ""), getattr(result, "stderr", ""))
+        if part
+    )
+
+
+def print_command_output(result: subprocess.CompletedProcess):
+    output = command_output(result)
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n")
+
+
+def is_network_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(marker in lowered for marker in NETWORK_ERROR_MARKERS)
+
+
+def is_non_fast_forward_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(marker in lowered for marker in NON_FAST_FORWARD_MARKERS)
+
+
 def git_push() -> bool:
     branch = get_current_branch()
     if not branch:
         print("  错误: 无法获取当前分支名。")
         return False
     # -u 设置上游分支，首次推送需要
-    result = run(f"git push -u origin {branch}")
-    if result.returncode != 0:
-        # 首次推送可能需要 force（远程有历史）
-        print("  推送失败，尝试 force push...")
-        result = run(f"git push -u origin {branch} --force")
-    return result.returncode == 0
+    result = run(f"git push -u origin {branch}", capture=True)
+    print_command_output(result)
+    if result.returncode == 0:
+        return True
+
+    output = command_output(result)
+    if is_network_error(output):
+        print("  无法连接 GitHub，请检查网络或代理后重新运行脚本。")
+        print("  本地提交已保留，网络恢复后可直接重试推送。")
+        return False
+
+    if is_non_fast_forward_error(output):
+        print("  远程分支包含本地没有的提交。")
+        confirm = input("  确认使用 --force-with-lease 覆盖远程分支? [y/N]: ").strip()
+        if confirm.lower() == "y":
+            result = run(f"git push -u origin {branch} --force-with-lease")
+            return result.returncode == 0
+        print(f"  已取消强制推送。可先执行: git pull --rebase origin {branch}")
+        return False
+
+    return False
 
 
 def read_version() -> str:
@@ -211,41 +292,47 @@ def main():
         input("按任意键继续...")
         sys.exit(1)
 
-    # 检查变更
-    if not has_changes():
-        print("\n没有需要提交的变更。")
+    # 检查变更和待推送提交
+    changes = has_changes()
+    pending_push = has_unpushed_commits()
+    if not changes and not pending_push:
+        print("\n没有需要提交或推送的变更。")
         input("按任意键继续...")
         sys.exit(0)
 
-    # 展示变更
-    print("\n变更文件:")
-    show_changes()
-    print()
+    if changes:
+        # 展示变更
+        print("\n变更文件:")
+        show_changes()
+        print()
 
-    # 输入提交说明
-    commit_msg = input("请输入提交说明: ").strip()
-    if not commit_msg:
-        print("提交说明不能为空。")
-        input("按任意键继续...")
-        sys.exit(1)
+        # 输入提交说明
+        commit_msg = input("请输入提交说明: ").strip()
+        if not commit_msg:
+            print("提交说明不能为空。")
+            input("按任意键继续...")
+            sys.exit(1)
 
-    # 添加文件（排除敏感目录）
-    print("\n[1/3] 添加文件...")
-    git_add_safe()
-    print("  完成")
+        # 添加文件（排除敏感目录）
+        print("\n[1/3] 添加文件...")
+        git_add_safe()
+        print("  完成")
 
-    # 提交
-    print("[2/3] 提交代码...")
-    if not git_commit(commit_msg):
-        print("Git 提交失败！")
-        input("按任意键继续...")
-        sys.exit(1)
-    print("  完成")
+        # 提交
+        print("[2/3] 提交代码...")
+        if not git_commit(commit_msg):
+            print("Git 提交失败！")
+            input("按任意键继续...")
+            sys.exit(1)
+        print("  完成")
+    else:
+        print("\n没有需要提交的文件变更，但检测到本地提交尚未推送。")
+        print("跳过提交，直接推送。")
 
     # 推送
     print("[3/3] 推送到远程...")
     if not git_push():
-        print("推送失败，请检查远程仓库地址和权限。")
+        print("推送失败，请检查远程仓库地址、权限、网络或代理。")
         input("按任意键继续...")
         sys.exit(1)
     print("  完成")
