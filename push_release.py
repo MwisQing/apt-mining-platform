@@ -210,11 +210,12 @@ def is_non_fast_forward_error(output: str) -> bool:
     return any(marker in lowered for marker in NON_FAST_FORWARD_MARKERS)
 
 
-def git_push() -> bool:
+def git_push():
+    """返回 True=推送成功, False=用户主动取消, None=推送失败"""
     branch = get_current_branch()
     if not branch:
         print("  错误: 无法获取当前分支名。")
-        return False
+        return None
     # -u 设置上游分支，首次推送需要
     result = run(f"git push -u origin {branch}", capture=True)
     print_command_output(result)
@@ -225,18 +226,22 @@ def git_push() -> bool:
     if is_network_error(output):
         print("  无法连接 GitHub，请检查网络或代理后重新运行脚本。")
         print("  本地提交已保留，网络恢复后可直接重试推送。")
-        return False
+        return None
 
     if is_non_fast_forward_error(output):
         print("  远程分支包含本地没有的提交。")
-        confirm = input("  确认使用 --force-with-lease 覆盖远程分支? [y/N]: ").strip()
+        print(f"  建议先执行: git pull --rebase origin {branch}")
+        confirm = input("  或使用 --force-with-lease 覆盖远程分支? [y/N]: ").strip()
         if confirm.lower() == "y":
             result = run(f"git push -u origin {branch} --force-with-lease")
-            return result.returncode == 0
-        print(f"  已取消强制推送。可先执行: git pull --rebase origin {branch}")
+            if result.returncode == 0:
+                return True
+            print("  强制推送失败。")
+            return None
+        print("  已取消推送。本地提交已保留，解决冲突后可重新运行脚本。")
         return False
 
-    return False
+    return None
 
 
 def read_version() -> str:
@@ -331,10 +336,15 @@ def main():
 
     # 推送
     print("[3/3] 推送到远程...")
-    if not git_push():
+    push_result = git_push()
+    if push_result is None:
         print("推送失败，请检查远程仓库地址、权限、网络或代理。")
         input("按任意键继续...")
         sys.exit(1)
+    if push_result is False:
+        # 用户主动取消，不算失败
+        input("按任意键继续...")
+        sys.exit(0)
     print("  完成")
 
     # 标签
